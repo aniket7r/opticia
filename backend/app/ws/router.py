@@ -17,6 +17,11 @@ from app.ws.handlers.session import (
     handle_session_end,
     handle_session_start,
 )
+from app.ws.handlers.vision import (
+    handle_mode_switch_video,
+    handle_photo_capture,
+    handle_video_frame,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +37,10 @@ MESSAGE_HANDLERS: dict[str, Any] = {
     "text.send": handle_text_message,
     "audio.chunk": handle_audio_chunk,
     "thinking.show": handle_thinking_request,
+    # Vision
+    "video.frame": handle_video_frame,
+    "photo.capture": handle_photo_capture,
+    "video.modeSwitch": handle_mode_switch_video,
 }
 
 

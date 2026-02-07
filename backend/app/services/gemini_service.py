@@ -153,6 +153,56 @@ class GeminiSession:
                         "format": "pcm16",
                     }
 
+    async def send_image(
+        self,
+        image_b64: str,
+        mime_type: str = "image/jpeg",
+        source: str = "camera",
+        prompt: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Send image frame and stream response."""
+        if not self._live_session or not self._is_active:
+            raise RuntimeError("Session not active")
+
+        async with self._live_session as session:
+            # Build context for the image
+            context = f"[Visual input from {source}]"
+            if prompt:
+                context = f"{context} {prompt}"
+
+            # Send image as blob
+            await session.send(
+                input=types.LiveClientRealtimeInput(
+                    media_chunks=[
+                        types.Blob(mime_type=mime_type, data=image_b64)
+                    ]
+                )
+            )
+
+            # Also send context message
+            await session.send(input=context, end_of_turn=True)
+
+            async for response in session.receive():
+                if response.text:
+                    yield {
+                        "type": "text",
+                        "content": response.text,
+                        "complete": response.server_content.turn_complete
+                        if response.server_content
+                        else False,
+                    }
+
+                # Check for camera repositioning requests in response
+                if response.text and "move" in response.text.lower() and "camera" in response.text.lower():
+                    yield {
+                        "type": "vision_request",
+                        "action": "reposition",
+                        "description": response.text,
+                    }
+
+        # Append to context history
+        self.context_history.append({"role": "user", "content": f"[{source} image]"})
+
     async def _recite_attention(self, session: Any) -> None:
         """Recite running summary to prevent goal drift."""
         if self.running_summary:
