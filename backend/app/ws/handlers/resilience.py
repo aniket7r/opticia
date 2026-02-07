@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from app.services.admin.metrics_collector import metrics_collector
 from app.services.resilience.fallback import MediaMode, fallback_manager
 from app.services.resilience.network import network_monitor
 from app.services.resilience.preferences import preferences_service, UserPreferences
@@ -56,10 +57,14 @@ async def handle_fallback_trigger(
 
     if fallback_type == "video":
         event = fallback_manager.trigger_video_fallback(state.session_id, reason)
+        # Record fallback metric
+        await metrics_collector.record_fallback(state.session_id, "video", "photo")
     elif fallback_type == "photo":
         event = fallback_manager.trigger_photo_fallback(state.session_id, reason)
+        await metrics_collector.record_fallback(state.session_id, "photo", "text")
     elif fallback_type == "audio":
         event = fallback_manager.trigger_audio_fallback(state.session_id, reason)
+        await metrics_collector.record_fallback(state.session_id, "audio", "text")
     else:
         await state.send_error("invalid_fallback", f"Unknown fallback type: {fallback_type}")
         return

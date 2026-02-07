@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import router as api_router
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.core.rate_limit import RateLimitMiddleware, rate_limiter
+from app.core.request_logging import RequestLoggingMiddleware
 from app.services.tools.init_tools import get_tool_count, init_all_tools
 from app.ws.router import router as ws_router
 
@@ -42,6 +44,19 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# Request logging middleware
+app.add_middleware(
+    RequestLoggingMiddleware,
+    exclude_paths=["/", "/health", "/api/v1/health"],
+)
+
+# Rate limiting middleware (added after CORS so it applies to all routes)
+app.add_middleware(
+    RateLimitMiddleware,
+    limiter=rate_limiter,
+    exclude_paths=["/", "/health", "/api/v1/health", "/api/v1/admin/health"],
 )
 
 # Include routers

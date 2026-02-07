@@ -19,6 +19,7 @@ class ConnectionState:
         self.mode: str = "voice"  # voice or text
         self.is_authenticated = False
         self.is_active = False
+        self.start_time: float | None = None  # For session duration tracking
 
     async def send(self, msg_type: str, payload: dict[str, Any] | None = None) -> None:
         """Send a message to this connection."""
