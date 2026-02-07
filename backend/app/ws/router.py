@@ -22,6 +22,10 @@ from app.ws.handlers.vision import (
     handle_photo_capture,
     handle_video_frame,
 )
+from app.ws.handlers.tools import (
+    handle_tool_execute,
+    handle_tool_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,9 @@ MESSAGE_HANDLERS: dict[str, Any] = {
     "video.frame": handle_video_frame,
     "photo.capture": handle_photo_capture,
     "video.modeSwitch": handle_mode_switch_video,
+    # Tools
+    "tool.execute": handle_tool_execute,
+    "tool.response": handle_tool_response,
 }
 
 

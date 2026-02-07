@@ -98,14 +98,34 @@ class GeminiSession:
 
     async def start(self) -> None:
         """Start a new Gemini Live session."""
+        from app.services.tools.registry import tool_registry
+
         self._client = genai.Client(api_key=settings.gemini_api_key)
 
         # Per docs: Can only set ONE response modality per session
         response_modality = "AUDIO" if self.mode == "voice" else "TEXT"
 
+        # Build tool definitions for Gemini
+        tool_definitions = tool_registry.get_definitions()
+        tools = None
+        if tool_definitions:
+            tools = [
+                types.Tool(
+                    function_declarations=[
+                        types.FunctionDeclaration(
+                            name=t["name"],
+                            description=t["description"],
+                            parameters=t["parameters"],
+                        )
+                        for t in tool_definitions
+                    ]
+                )
+            ]
+
         config = types.LiveConnectConfig(
             response_modalities=[response_modality],
             system_instruction=self._build_system_prompt(),
+            tools=tools,
         )
 
         # Connect and enter session context
