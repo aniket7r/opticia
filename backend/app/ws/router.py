@@ -5,7 +5,13 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.services.gemini_service import gemini_service
 from app.ws.connection import ConnectionState, manager
+from app.ws.handlers.gemini import (
+    handle_audio_chunk,
+    handle_text_message,
+    handle_thinking_request,
+)
 from app.ws.handlers.session import (
     handle_mode_switch,
     handle_session_end,
@@ -18,9 +24,14 @@ router = APIRouter()
 
 # Message type to handler mapping
 MESSAGE_HANDLERS: dict[str, Any] = {
+    # Session lifecycle
     "session.start": handle_session_start,
     "session.end": handle_session_end,
     "mode.switch": handle_mode_switch,
+    # AI communication
+    "text.send": handle_text_message,
+    "audio.chunk": handle_audio_chunk,
+    "thinking.show": handle_thinking_request,
 }
 
 
@@ -69,4 +80,6 @@ async def websocket_session(websocket: WebSocket) -> None:
             recoverable=False,
         )
     finally:
+        # Cleanup Gemini session
+        await gemini_service.close_session(state.session_id)
         await manager.disconnect(state.session_id)
