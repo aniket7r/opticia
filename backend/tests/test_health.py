@@ -13,6 +13,6 @@ def test_health_endpoint():
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
-    assert data["serviceName"] == "gemini3-backend"
+    assert data["serviceName"] == "opticia-ai-backend"
     assert data["version"] == "0.1.0"
     assert "timestamp" in data

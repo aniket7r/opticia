@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     )
 
     # App
-    app_name: str = "gemini3"
+    app_name: str = "opticia-ai"
     debug: bool = False
 
     # Gemini API

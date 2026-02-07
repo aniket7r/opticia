@@ -24,7 +24,7 @@ async def health_check() -> HealthResponse:
     """Check service health."""
     return HealthResponse(
         status="healthy",
-        service_name="gemini3-backend",
+        service_name="opticia-ai-backend",
         timestamp=datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         version="0.1.0",
     )

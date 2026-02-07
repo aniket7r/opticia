@@ -1,4 +1,4 @@
-# gemini3
+# Opticia AI
 
 Real-time visual understanding AI platform with voice guidance. Built for Google DeepMind Gemini 3 Hackathon.
 
