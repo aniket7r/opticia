@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.core.supabase import get_supabase_client
+from app.core.supabase import get_supabase_admin_client
 from app.ws.connection import manager
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class DashboardService:
     """Provides data for admin dashboard."""
 
     def __init__(self) -> None:
-        self.client = get_supabase_client()
+        self.client = get_supabase_admin_client()
 
     def get_active_sessions(self) -> int:
         """Get current active WebSocket connections."""

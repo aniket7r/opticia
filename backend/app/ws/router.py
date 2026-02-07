@@ -109,11 +109,14 @@ async def websocket_session(websocket: WebSocket) -> None:
         logger.info(f"WebSocket disconnected: {state.session_id}")
     except Exception as e:
         logger.error(f"WebSocket error: {state.session_id}, {e}")
-        await state.send_error(
-            code="internal_error",
-            message="An internal error occurred",
-            recoverable=False,
-        )
+        try:
+            await state.send_error(
+                code="internal_error",
+                message="An internal error occurred",
+                recoverable=False,
+            )
+        except Exception:
+            pass  # Connection already closed
     finally:
         # Cleanup all session state
         from app.services.resilience.fallback import fallback_manager

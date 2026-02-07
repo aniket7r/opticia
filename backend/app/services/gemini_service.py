@@ -29,8 +29,11 @@ RECONNECT_BUFFER_SECONDS = 15  # Reconnect before timeout
 AUDIO_INPUT_SAMPLE_RATE = 16000
 AUDIO_OUTPUT_SAMPLE_RATE = 24000
 
-# Model for Live API
-LIVE_API_MODEL = "gemini-2.0-flash-live-preview-04-09"
+# Model for Live API (updated Feb 2026)
+# Previous models (shutdown Dec 2025): gemini-2.0-flash-live-preview-04-09, gemini-2.0-flash-live-001
+# Current: Gemini 2.0 Flash experimental with live/multimodal support
+# See: https://ai.google.dev/gemini-api/docs/models for latest model names
+LIVE_API_MODEL = "gemini-2.0-flash-exp"
 
 
 class GeminiSession:

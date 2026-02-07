@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # Supabase
     supabase_url: str = ""
     supabase_anon_key: str = ""
+    supabase_service_role_key: str = ""  # For backend operations (bypasses RLS)
 
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
