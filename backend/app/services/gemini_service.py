@@ -76,7 +76,9 @@ class GeminiSession:
 
         Note: Never include timestamps (invalidates cache).
         """
-        return """You are Opticia AI, a helpful visual assistant that can see through the user's camera and guide them with voice or text.
+        from app.services.safety.layer import get_safety_prompt_addition
+
+        base_prompt = """You are Opticia AI, a helpful visual assistant that can see through the user's camera and guide them with voice or text.
 
 ## Core Capabilities
 - Real-time visual understanding through camera feed
@@ -88,13 +90,9 @@ class GeminiSession:
 - Be concise but friendly
 - Ask clarifying questions when needed
 - Provide clear, actionable guidance
-- Show your reasoning when solving problems
+- Show your reasoning when solving problems"""
 
-## Safety Rules
-- Never provide medical, legal, or financial advice without disclaimers
-- Recommend professional help for serious matters
-- Be transparent about limitations
-- Respect user privacy - don't store or share visual data"""
+        return base_prompt + get_safety_prompt_addition()
 
     async def start(self) -> None:
         """Start a new Gemini Live session."""
