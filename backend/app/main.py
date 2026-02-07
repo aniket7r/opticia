@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import router as api_router
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.ws.router import router as ws_router
 
 
 @asynccontextmanager
@@ -36,11 +37,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include API router
+# Include routers
 app.include_router(api_router)
+app.include_router(ws_router)
 
 
 @app.get("/")
 async def root() -> dict[str, str]:
     """Root endpoint."""
-    return {"service": "gemini3-backend", "status": "running"}
+    return {"service": "opticia-ai-backend", "status": "running"}
