@@ -1,6 +1,5 @@
 """Vision/video frame handlers."""
 
-import base64
 import logging
 from typing import Any
 
@@ -11,13 +10,52 @@ logger = logging.getLogger(__name__)
 
 
 async def handle_video_frame(state: ConnectionState, payload: dict[str, Any]) -> None:
-    """Handle video.frame message - process camera/screen frame."""
+    """Handle video.frame message - stream camera/screen frame to Gemini.
+
+    Video is processed at 1 FPS by Gemini Live API.
+    Frames are sent via send_realtime_input() for low-latency streaming.
+    """
     frame_data = payload.get("data", "")  # base64 encoded image
-    source = payload.get("source", "camera")  # camera or screen
     mime_type = payload.get("mimeType", "image/jpeg")
 
     if not frame_data:
         await state.send_error("empty_frame", "Frame data is required")
+        return
+
+    session = gemini_service.get_session(state.session_id)
+    if not session:
+        session = await gemini_service.create_session(state.session_id, state.mode)
+
+    # Check if we need to reconnect
+    if session.should_reconnect:
+        await state.send("session.reconnecting", {"timeRemaining": session.time_remaining})
+        session = await gemini_service.reconnect_session(state.session_id)
+        if not session:
+            await state.send_error("reconnect_failed", "Failed to reconnect session")
+            return
+        await state.send("session.reconnected", {})
+
+    try:
+        # Send frame - this is fire-and-forget for video streaming
+        # Responses come through the audio/text receive loop
+        async for _ in session.send_video_frame(frame_data, mime_type):
+            pass  # Video frames don't yield responses directly
+    except Exception as e:
+        logger.error(f"Vision error: {e}")
+        await state.send_error("vision_error", str(e))
+
+
+async def handle_photo_capture(state: ConnectionState, payload: dict[str, Any]) -> None:
+    """Handle photo.capture message - analyze a single photo.
+
+    Unlike video frames, photos get immediate analysis response.
+    """
+    photo_data = payload.get("data", "")  # base64 encoded image
+    mime_type = payload.get("mimeType", "image/jpeg")
+    context = payload.get("context", "")  # Optional user context
+
+    if not photo_data:
+        await state.send_error("empty_photo", "Photo data is required")
         return
 
     session = gemini_service.get_session(state.session_id)
@@ -33,45 +71,10 @@ async def handle_video_frame(state: ConnectionState, payload: dict[str, Any]) ->
             return
 
     try:
-        # Send frame to Gemini for analysis
-        async for chunk in session.send_image(frame_data, mime_type, source):
-            if chunk["type"] == "text":
-                await state.send(
-                    "ai.text",
-                    {"content": chunk["content"], "complete": chunk.get("complete", False)},
-                )
-            elif chunk["type"] == "vision_request":
-                # AI is requesting camera repositioning
-                await state.send(
-                    "vision.request",
-                    {"action": chunk["action"], "description": chunk["description"]},
-                )
-    except Exception as e:
-        logger.error(f"Vision error: {e}")
-        await state.send_error("vision_error", str(e))
+        # Create prompt based on context
+        prompt = context if context else "Analyze this image and describe what you see."
 
-
-async def handle_photo_capture(state: ConnectionState, payload: dict[str, Any]) -> None:
-    """Handle photo.capture message - process single photo."""
-    photo_data = payload.get("data", "")  # base64 encoded image
-    mime_type = payload.get("mimeType", "image/jpeg")
-    context = payload.get("context", "")  # Optional user context about the photo
-
-    if not photo_data:
-        await state.send_error("empty_photo", "Photo data is required")
-        return
-
-    session = gemini_service.get_session(state.session_id)
-    if not session:
-        session = await gemini_service.create_session(state.session_id, state.mode)
-
-    try:
-        # Create prompt with optional context
-        prompt = "Analyze this image and describe what you see."
-        if context:
-            prompt = f"{context}\n\n[User provided context: {context}]"
-
-        async for chunk in session.send_image(photo_data, mime_type, "photo", prompt):
+        async for chunk in session.send_image(photo_data, mime_type, prompt):
             if chunk["type"] == "text":
                 await state.send(
                     "ai.text",

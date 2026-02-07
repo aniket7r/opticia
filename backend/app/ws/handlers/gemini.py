@@ -49,7 +49,10 @@ async def handle_text_message(state: ConnectionState, payload: dict[str, Any]) -
 
 
 async def handle_audio_chunk(state: ConnectionState, payload: dict[str, Any]) -> None:
-    """Handle audio.chunk message - stream audio to Gemini."""
+    """Handle audio.chunk message - stream audio to Gemini.
+
+    Audio format: 16-bit PCM, 16kHz, mono (per Gemini Live API docs)
+    """
     audio_b64 = payload.get("data", "")
     if not audio_b64:
         await state.send_error("empty_audio", "Audio data is required")
@@ -61,23 +64,23 @@ async def handle_audio_chunk(state: ConnectionState, payload: dict[str, Any]) ->
 
     # Check if we need to reconnect
     if session.should_reconnect:
-        await state.send("session.reconnecting", {})
+        await state.send("session.reconnecting", {"timeRemaining": session.time_remaining})
         session = await gemini_service.reconnect_session(state.session_id)
         if not session:
             await state.send_error("reconnect_failed", "Failed to reconnect session")
             return
+        await state.send("session.reconnected", {})
 
     try:
         audio_data = base64.b64decode(audio_b64)
-        sample_rate = payload.get("sampleRate", 16000)
 
-        async for chunk in session.send_audio(audio_data, sample_rate):
+        async for chunk in session.send_audio(audio_data):
             if chunk["type"] == "text":
                 await state.send("ai.text", {"content": chunk["content"]})
             elif chunk["type"] == "audio":
                 await state.send(
                     "ai.audio",
-                    {"data": chunk["data"], "format": chunk["format"]},
+                    {"data": chunk["data"], "sampleRate": chunk["sampleRate"]},
                 )
     except Exception as e:
         logger.error(f"Gemini audio error: {e}")

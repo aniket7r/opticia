@@ -1,6 +1,10 @@
-"""Gemini Live API service."""
+"""Gemini Live API service.
 
-import asyncio
+Based on official documentation:
+- https://ai.google.dev/gemini-api/docs/live
+- https://googleapis.github.io/python-genai/
+"""
+
 import base64
 import logging
 from datetime import datetime, timezone
@@ -13,32 +17,54 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Gemini Live API constraints
-SESSION_TIMEOUT_SECONDS = 120  # 2-minute limit
-RECONNECT_BUFFER_SECONDS = 10  # Reconnect before timeout
+# Gemini Live API constraints (per official docs)
+# Audio-only: 15 minutes, Audio+Video: 2 minutes
+SESSION_TIMEOUT_AUDIO_ONLY = 900  # 15 minutes
+SESSION_TIMEOUT_WITH_VIDEO = 120  # 2 minutes
+RECONNECT_BUFFER_SECONDS = 15  # Reconnect before timeout
+
+# Audio format requirements (per official docs)
+# Input: 16-bit PCM, 16kHz, mono
+# Output: 24kHz
+AUDIO_INPUT_SAMPLE_RATE = 16000
+AUDIO_OUTPUT_SAMPLE_RATE = 24000
+
+# Model for Live API
+LIVE_API_MODEL = "gemini-2.0-flash-live-preview-04-09"
 
 
 class GeminiSession:
-    """Manages a single Gemini Live API session."""
+    """Manages a single Gemini Live API session.
+
+    Uses the official google-genai SDK methods:
+    - send_client_content() for text (deterministic ordering)
+    - send_realtime_input() for audio/video (low-latency streaming)
+    """
 
     def __init__(self, session_id: str, mode: str = "voice") -> None:
         self.session_id = session_id
-        self.mode = mode
+        self.mode = mode  # "voice" or "text"
+        self.has_video = False  # Track if video is being used
         self.started_at: datetime | None = None
         self.context_history: list[dict[str, Any]] = []
         self.tool_call_count = 0
         self.running_summary = ""
         self._client: genai.Client | None = None
-        self._live_session: Any = None
+        self._session: Any = None
         self._is_active = False
+
+    @property
+    def session_timeout(self) -> int:
+        """Get session timeout based on modalities used."""
+        return SESSION_TIMEOUT_WITH_VIDEO if self.has_video else SESSION_TIMEOUT_AUDIO_ONLY
 
     @property
     def time_remaining(self) -> float:
         """Seconds remaining before session timeout."""
         if not self.started_at:
-            return SESSION_TIMEOUT_SECONDS
+            return self.session_timeout
         elapsed = (datetime.now(timezone.utc) - self.started_at).total_seconds()
-        return max(0, SESSION_TIMEOUT_SECONDS - elapsed)
+        return max(0, self.session_timeout - elapsed)
 
     @property
     def should_reconnect(self) -> bool:
@@ -46,8 +72,10 @@ class GeminiSession:
         return self.time_remaining < RECONNECT_BUFFER_SECONDS
 
     def _build_system_prompt(self) -> str:
-        """Build stable system prompt for KV-cache optimization."""
-        # Static prefix - never include timestamps
+        """Build stable system prompt for KV-cache optimization.
+
+        Note: Never include timestamps (invalidates cache).
+        """
         return """You are Opticia AI, a helpful visual assistant that can see through the user's camera and guide them with voice or text.
 
 ## Core Capabilities
@@ -72,143 +100,167 @@ class GeminiSession:
         """Start a new Gemini Live session."""
         self._client = genai.Client(api_key=settings.gemini_api_key)
 
+        # Per docs: Can only set ONE response modality per session
+        response_modality = "AUDIO" if self.mode == "voice" else "TEXT"
+
         config = types.LiveConnectConfig(
-            response_modalities=["AUDIO", "TEXT"] if self.mode == "voice" else ["TEXT"],
+            response_modalities=[response_modality],
             system_instruction=self._build_system_prompt(),
         )
 
-        self._live_session = self._client.aio.live.connect(
-            model="gemini-2.0-flash-exp",
+        # Connect and enter session context
+        self._session = await self._client.aio.live.connect(
+            model=LIVE_API_MODEL,
             config=config,
-        )
+        ).__aenter__()
 
         self.started_at = datetime.now(timezone.utc)
         self._is_active = True
-        logger.info(f"Gemini session started: {self.session_id}")
+        logger.info(f"Gemini session started: {self.session_id}, mode={self.mode}")
 
     async def send_text(self, text: str) -> AsyncGenerator[dict[str, Any], None]:
-        """Send text and stream response."""
-        if not self._live_session or not self._is_active:
+        """Send text using send_client_content (deterministic ordering)."""
+        if not self._session or not self._is_active:
             raise RuntimeError("Session not active")
 
-        async with self._live_session as session:
-            await session.send(input=text, end_of_turn=True)
+        # Use send_client_content for text (per SDK docs)
+        await self._session.send_client_content(
+            turns=[types.Content(parts=[types.Part(text=text)])],
+            turn_complete=True,
+        )
 
-            async for response in session.receive():
-                if response.text:
-                    yield {
-                        "type": "text",
-                        "content": response.text,
-                        "complete": response.server_content.turn_complete
-                        if response.server_content
-                        else False,
-                    }
+        async for response in self._session.receive():
+            if response.server_content:
+                # Extract text from response
+                if response.server_content.model_turn:
+                    for part in response.server_content.model_turn.parts:
+                        if part.text:
+                            yield {
+                                "type": "text",
+                                "content": part.text,
+                                "complete": response.server_content.turn_complete,
+                            }
 
-                # Handle tool calls
-                if response.tool_call:
-                    self.tool_call_count += 1
+            # Handle tool calls
+            if response.tool_call:
+                self.tool_call_count += 1
+                for fc in response.tool_call.function_calls:
                     yield {
                         "type": "tool_call",
-                        "name": response.tool_call.function_calls[0].name
-                        if response.tool_call.function_calls
-                        else None,
-                        "args": response.tool_call.function_calls[0].args
-                        if response.tool_call.function_calls
-                        else {},
+                        "name": fc.name,
+                        "args": dict(fc.args) if fc.args else {},
                     }
 
-                    # Attention recitation every 5 tool calls
-                    if self.tool_call_count % 5 == 0:
-                        await self._recite_attention(session)
+                # Attention recitation every 5 tool calls (Manus pattern)
+                if self.tool_call_count % 5 == 0:
+                    await self._recite_attention()
+
+            # Check if turn is complete
+            if response.server_content and response.server_content.turn_complete:
+                break
 
         # Append to context history (append-only for cache)
         self.context_history.append({"role": "user", "content": text})
 
-    async def send_audio(
-        self, audio_data: bytes, sample_rate: int = 16000
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        """Send audio and stream response."""
-        if not self._live_session or not self._is_active:
+    async def send_audio(self, audio_data: bytes) -> AsyncGenerator[dict[str, Any], None]:
+        """Send audio using send_realtime_input (low-latency streaming).
+
+        Audio format: 16-bit PCM, 16kHz, mono (per official docs)
+        """
+        if not self._session or not self._is_active:
             raise RuntimeError("Session not active")
 
-        async with self._live_session as session:
-            # Send audio as base64
-            audio_b64 = base64.b64encode(audio_data).decode()
-            await session.send(
-                input=types.LiveClientRealtimeInput(
-                    media_chunks=[
-                        types.Blob(mime_type="audio/pcm", data=audio_b64)
-                    ]
-                )
+        # Use send_realtime_input for audio (per SDK docs)
+        await self._session.send_realtime_input(
+            audio=types.Blob(
+                mime_type="audio/pcm",
+                data=base64.b64encode(audio_data).decode(),
             )
+        )
 
-            async for response in session.receive():
-                if response.text:
-                    yield {"type": "text", "content": response.text}
+        # Stream responses
+        async for response in self._session.receive():
+            if response.server_content and response.server_content.model_turn:
+                for part in response.server_content.model_turn.parts:
+                    # Text response
+                    if part.text:
+                        yield {"type": "text", "content": part.text}
 
-                if response.data:
-                    yield {
-                        "type": "audio",
-                        "data": base64.b64encode(response.data).decode(),
-                        "format": "pcm16",
-                    }
+                    # Audio response (inline_data)
+                    if part.inline_data and isinstance(part.inline_data.data, bytes):
+                        yield {
+                            "type": "audio",
+                            "data": base64.b64encode(part.inline_data.data).decode(),
+                            "sampleRate": AUDIO_OUTPUT_SAMPLE_RATE,
+                        }
+
+            if response.server_content and response.server_content.turn_complete:
+                break
+
+    async def send_video_frame(
+        self,
+        frame_b64: str,
+        mime_type: str = "image/jpeg",
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Send video frame using send_realtime_input.
+
+        Note: Video is processed at 1 FPS by Gemini.
+        """
+        if not self._session or not self._is_active:
+            raise RuntimeError("Session not active")
+
+        # Mark that video is being used (affects timeout)
+        self.has_video = True
+
+        # Use send_realtime_input for video (per SDK docs)
+        await self._session.send_realtime_input(
+            video=types.Blob(
+                mime_type=mime_type,
+                data=frame_b64,
+            )
+        )
+
+        # Video frames typically don't get immediate responses
+        # AI responds based on accumulated visual context
+        # Yield nothing here - responses come through audio/text flow
 
     async def send_image(
         self,
         image_b64: str,
         mime_type: str = "image/jpeg",
-        source: str = "camera",
         prompt: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """Send image frame and stream response."""
-        if not self._live_session or not self._is_active:
+        """Send a single image with optional prompt for analysis."""
+        if not self._session or not self._is_active:
             raise RuntimeError("Session not active")
 
-        async with self._live_session as session:
-            # Build context for the image
-            context = f"[Visual input from {source}]"
-            if prompt:
-                context = f"{context} {prompt}"
+        self.has_video = True
 
-            # Send image as blob
-            await session.send(
-                input=types.LiveClientRealtimeInput(
-                    media_chunks=[
-                        types.Blob(mime_type=mime_type, data=image_b64)
-                    ]
-                )
+        # Send image via realtime input
+        await self._session.send_realtime_input(
+            video=types.Blob(
+                mime_type=mime_type,
+                data=image_b64,
             )
+        )
 
-            # Also send context message
-            await session.send(input=context, end_of_turn=True)
+        # If there's a prompt, send it as text
+        if prompt:
+            async for chunk in self.send_text(prompt):
+                yield chunk
+        else:
+            # Request description
+            async for chunk in self.send_text("What do you see in this image?"):
+                yield chunk
 
-            async for response in session.receive():
-                if response.text:
-                    yield {
-                        "type": "text",
-                        "content": response.text,
-                        "complete": response.server_content.turn_complete
-                        if response.server_content
-                        else False,
-                    }
-
-                # Check for camera repositioning requests in response
-                if response.text and "move" in response.text.lower() and "camera" in response.text.lower():
-                    yield {
-                        "type": "vision_request",
-                        "action": "reposition",
-                        "description": response.text,
-                    }
-
-        # Append to context history
-        self.context_history.append({"role": "user", "content": f"[{source} image]"})
-
-    async def _recite_attention(self, session: Any) -> None:
-        """Recite running summary to prevent goal drift."""
-        if self.running_summary:
-            await session.send(
-                input=f"[ATTENTION RECITATION]\nCurrent objective: {self.running_summary}",
-                end_of_turn=False,
+    async def _recite_attention(self) -> None:
+        """Recite running summary to prevent goal drift (Manus pattern)."""
+        if self.running_summary and self._session:
+            await self._session.send_client_content(
+                turns=[types.Content(parts=[types.Part(
+                    text=f"[ATTENTION RECITATION] Current objective: {self.running_summary}"
+                )])],
+                turn_complete=False,
             )
 
     def update_summary(self, summary: str) -> None:
@@ -220,6 +272,7 @@ class GeminiSession:
         return {
             "session_id": self.session_id,
             "mode": self.mode,
+            "has_video": self.has_video,
             "context_history": self.context_history,
             "tool_call_count": self.tool_call_count,
             "running_summary": self.running_summary,
@@ -229,6 +282,7 @@ class GeminiSession:
     def restore_context(cls, data: dict[str, Any]) -> "GeminiSession":
         """Restore session from serialized context."""
         session = cls(data["session_id"], data["mode"])
+        session.has_video = data.get("has_video", False)
         session.context_history = data.get("context_history", [])
         session.tool_call_count = data.get("tool_call_count", 0)
         session.running_summary = data.get("running_summary", "")
@@ -237,9 +291,11 @@ class GeminiSession:
     async def close(self) -> None:
         """Close the session."""
         self._is_active = False
-        if self._live_session:
-            # Cleanup will happen automatically
-            pass
+        if self._session:
+            try:
+                await self._session.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"Error closing session: {e}")
         logger.info(f"Gemini session closed: {self.session_id}")
 
 
@@ -275,8 +331,19 @@ class GeminiService:
         # Create new session with restored context
         new_session = GeminiSession.restore_context(context_data)
         await new_session.start()
-        self.sessions[session_id] = new_session
 
+        # Restore context by sending history summary
+        if new_session.context_history:
+            summary = f"Previous conversation summary: {len(new_session.context_history)} exchanges"
+            if new_session.running_summary:
+                summary += f". Current objective: {new_session.running_summary}"
+            # Don't await - just prime the context
+            await new_session._session.send_client_content(
+                turns=[types.Content(parts=[types.Part(text=summary)])],
+                turn_complete=False,
+            )
+
+        self.sessions[session_id] = new_session
         logger.info(f"Session reconnected: {session_id}")
         return new_session
 
