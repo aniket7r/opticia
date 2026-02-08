@@ -40,6 +40,7 @@ jobs:
             --set-env-vars "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" \
             --set-env-vars "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" \
             --set-env-vars "SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" \
+            --set-env-vars "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             --set-env-vars "^@^CORS_ORIGINS=[\"*\"]"
 
       - name: Show Service URL
