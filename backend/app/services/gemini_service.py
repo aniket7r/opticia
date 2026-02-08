@@ -136,11 +136,21 @@ class GeminiSession:
                 )
             ]
 
-        config = types.LiveConnectConfig(
-            response_modalities=[response_modality],
-            system_instruction=self._build_system_prompt(),
-            tools=tools,
-        )
+        # Build config - for audio mode, enable transcription to get text from audio
+        # See: https://github.com/googleapis/python-genai/issues/380
+        if self.mode == "voice":
+            config = types.LiveConnectConfig(
+                response_modalities=[response_modality],
+                system_instruction=self._build_system_prompt(),
+                tools=tools,
+                output_audio_transcription=types.AudioTranscriptionConfig(),
+            )
+        else:
+            config = types.LiveConnectConfig(
+                response_modalities=[response_modality],
+                system_instruction=self._build_system_prompt(),
+                tools=tools,
+            )
 
         # Connect and enter session context
         try:
@@ -175,7 +185,7 @@ class GeminiSession:
                 logger.debug(f"Received response: {type(response)}")
 
                 if response.server_content:
-                    # Extract text from response
+                    # Extract text from response (for text model)
                     if response.server_content.model_turn:
                         for part in response.server_content.model_turn.parts:
                             if part.text:
@@ -193,6 +203,18 @@ class GeminiSession:
                                     "data": base64.b64encode(part.inline_data.data).decode() if isinstance(part.inline_data.data, bytes) else part.inline_data.data,
                                     "sampleRate": AUDIO_OUTPUT_SAMPLE_RATE,
                                 }
+
+                    # Handle audio transcription (for native audio model with transcription enabled)
+                    # See: https://github.com/googleapis/python-genai/issues/380
+                    if hasattr(response.server_content, 'output_transcription') and response.server_content.output_transcription:
+                        transcription = response.server_content.output_transcription
+                        if hasattr(transcription, 'text') and transcription.text:
+                            received_response = True
+                            yield {
+                                "type": "text",
+                                "content": transcription.text,
+                                "complete": response.server_content.turn_complete,
+                            }
 
                 # Handle tool calls
                 if response.tool_call:
@@ -240,22 +262,29 @@ class GeminiSession:
 
         # Stream responses
         async for response in self._session.receive():
-            if response.server_content and response.server_content.model_turn:
-                for part in response.server_content.model_turn.parts:
-                    # Text response
-                    if part.text:
-                        yield {"type": "text", "content": part.text}
+            if response.server_content:
+                if response.server_content.model_turn:
+                    for part in response.server_content.model_turn.parts:
+                        # Text response
+                        if part.text:
+                            yield {"type": "text", "content": part.text}
 
-                    # Audio response (inline_data)
-                    if part.inline_data and isinstance(part.inline_data.data, bytes):
-                        yield {
-                            "type": "audio",
-                            "data": base64.b64encode(part.inline_data.data).decode(),
-                            "sampleRate": AUDIO_OUTPUT_SAMPLE_RATE,
-                        }
+                        # Audio response (inline_data)
+                        if part.inline_data and isinstance(part.inline_data.data, bytes):
+                            yield {
+                                "type": "audio",
+                                "data": base64.b64encode(part.inline_data.data).decode(),
+                                "sampleRate": AUDIO_OUTPUT_SAMPLE_RATE,
+                            }
 
-            if response.server_content and response.server_content.turn_complete:
-                break
+                # Handle audio transcription
+                if hasattr(response.server_content, 'output_transcription') and response.server_content.output_transcription:
+                    transcription = response.server_content.output_transcription
+                    if hasattr(transcription, 'text') and transcription.text:
+                        yield {"type": "text", "content": transcription.text}
+
+                if response.server_content.turn_complete:
+                    break
 
     async def send_video_frame(
         self,
