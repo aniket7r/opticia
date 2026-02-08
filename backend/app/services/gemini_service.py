@@ -29,10 +29,11 @@ RECONNECT_BUFFER_SECONDS = 15  # Reconnect before timeout
 AUDIO_INPUT_SAMPLE_RATE = 16000
 AUDIO_OUTPUT_SAMPLE_RATE = 24000
 
-# Models for Live API
-# Use the stable model that works with bidiGenerateContent
+# Model for Live API
+# IMPORTANT: Do NOT include "models/" prefix - the SDK adds it automatically
+# Only gemini-2.5-flash-native-audio-preview supports Live API (bidiGenerateContent)
 # See: https://ai.google.dev/gemini-api/docs/models
-LIVE_API_MODEL = "models/gemini-2.0-flash-exp"
+LIVE_API_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
 
 class GeminiSession:
