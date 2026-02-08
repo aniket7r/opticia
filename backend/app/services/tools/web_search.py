@@ -85,25 +85,29 @@ async def web_search_handler(args: dict[str, Any]) -> ToolResult:
 
 
 async def _perform_search(query: str, num_results: int) -> list[dict[str, Any]]:
-    """Perform actual web search.
+    """Perform web search using DuckDuckGo (ddgs package)."""
+    from ddgs import DDGS
 
-    TODO: Integrate with search API. Options:
-    - Google Custom Search API
-    - Bing Web Search API
-    - SerpAPI
-    - Brave Search API
-    """
-    # Placeholder for hackathon - returns mock results
-    # In production, replace with actual API call
-    logger.warning("Using placeholder search - integrate real API for production")
+    try:
+        results = DDGS().text(query, max_results=num_results)
 
-    return [
-        {
-            "title": f"Search result for: {query}",
-            "snippet": "This is a placeholder result. Integrate a real search API for production use.",
-            "url": "https://example.com",
-        }
-    ]
+        return [
+            {
+                "title": r.get("title", ""),
+                "snippet": r.get("body", ""),
+                "url": r.get("href", ""),
+            }
+            for r in results
+        ]
+    except Exception as e:
+        logger.error(f"DuckDuckGo search error: {e}")
+        return [
+            {
+                "title": f"Search failed for: {query}",
+                "snippet": f"Search temporarily unavailable: {str(e)[:100]}",
+                "url": "",
+            }
+        ]
 
 
 def register_web_search_tool() -> None:

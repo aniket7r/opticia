@@ -24,6 +24,8 @@ interface BottomBarProps {
   onCapturePhoto: () => string | null;
   onScreenShare?: () => void;
   isScreenSharing?: boolean;
+  isVoiceStreaming?: boolean;
+  onToggleVoice?: () => void;
 }
 
 export function BottomBar({
@@ -35,6 +37,8 @@ export function BottomBar({
   onCapturePhoto,
   onScreenShare,
   isScreenSharing,
+  isVoiceStreaming,
+  onToggleVoice,
 }: BottomBarProps) {
   const [text, setText] = useState("");
   const [plusOpen, setPlusOpen] = useState(false);
@@ -137,7 +141,8 @@ export function BottomBar({
     setToolsOpen(false);
   };
 
-  if (voiceRecording.recording) {
+  // Only show local voice recording UI if live streaming is not available
+  if (voiceRecording.recording && !onToggleVoice) {
     return (
       <div className="px-4 pb-[env(safe-area-inset-bottom,12px)] pt-3">
         <div className="rounded-2xl border border-border bg-card p-3 shadow-sm">
@@ -290,13 +295,18 @@ export function BottomBar({
 
             <div className="flex-1" />
 
-            {/* Mic (STT) */}
+            {/* Mic - live voice streaming to Gemini */}
             <button
-              onClick={voiceRecording.startRecording}
-              className="flex items-center justify-center rounded-lg p-1.5 transition-all duration-200 active:scale-90 text-muted-foreground hover:text-foreground hover:bg-accent"
-              aria-label="Start voice recording"
+              onClick={onToggleVoice || voiceRecording.startRecording}
+              className={cn(
+                "flex items-center justify-center rounded-lg p-1.5 transition-all duration-200 active:scale-90",
+                isVoiceStreaming
+                  ? "text-red-500 bg-red-500/10"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
+              )}
+              aria-label={isVoiceStreaming ? "Stop voice" : "Start voice"}
             >
-              <Mic className="h-4 w-4" />
+              <Mic className={cn("h-4 w-4", isVoiceStreaming && "animate-pulse")} />
             </button>
 
             {/* Send */}

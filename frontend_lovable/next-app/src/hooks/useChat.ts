@@ -24,6 +24,7 @@ export interface ThinkingStep {
 interface UseChatOptions {
   onToolCall?: (name: string, args: Record<string, unknown>) => void;
   onError?: (error: { code: string; message: string }) => void;
+  captureFrame?: () => string | null;
 }
 
 export function useChat(options: UseChatOptions = {}) {
@@ -64,13 +65,18 @@ export function useChat(options: UseChatOptions = {}) {
       const { content, complete } = msg.payload as { content: string; complete?: boolean };
 
       setMessages((prev) => {
+        // Finalize any streaming user transcription before adding AI text
+        const updated = prev.map((m) =>
+          m.role === "user" && m.isStreaming ? { ...m, isStreaming: false } : m
+        );
+
         // Find or create AI message
-        const lastMessage = prev[prev.length - 1];
+        const lastMessage = updated[updated.length - 1];
 
         if (lastMessage?.role === "ai" && lastMessage.isStreaming) {
           // Append to existing streaming message
-          return prev.map((m, i) =>
-            i === prev.length - 1
+          return updated.map((m, i) =>
+            i === updated.length - 1
               ? { ...m, content: m.content + content, isStreaming: !complete }
               : m
           );
@@ -83,7 +89,7 @@ export function useChat(options: UseChatOptions = {}) {
             timestamp: new Date(),
             isStreaming: !complete,
           };
-          return [...prev, newMessage];
+          return [...updated, newMessage];
         }
       });
 
@@ -96,6 +102,34 @@ export function useChat(options: UseChatOptions = {}) {
     const unsubscribeAudio = subscribe("ai.audio", (msg: WSMessage) => {
       const { data, sampleRate } = msg.payload as { data: string; sampleRate: number };
       audioPlayerRef.current?.enqueue(data, sampleRate);
+    });
+
+    const unsubscribeUserTranscription = subscribe("user.transcription", (msg: WSMessage) => {
+      const { content } = msg.payload as { content: string };
+      if (!content) return;
+
+      setMessages((prev) => {
+        const lastMessage = prev[prev.length - 1];
+
+        if (lastMessage?.role === "user" && lastMessage.isStreaming) {
+          // Append to existing streaming user transcription
+          return prev.map((m, i) =>
+            i === prev.length - 1
+              ? { ...m, content: m.content + content }
+              : m
+          );
+        } else {
+          // Create new user message from voice transcription
+          const newMessage: Message = {
+            id: crypto.randomUUID(),
+            role: "user",
+            content,
+            timestamp: new Date(),
+            isStreaming: true,
+          };
+          return [...prev, newMessage];
+        }
+      });
     });
 
     const unsubscribeToolCall = subscribe("ai.tool_call", (msg: WSMessage) => {
@@ -129,6 +163,7 @@ export function useChat(options: UseChatOptions = {}) {
     return () => {
       unsubscribeText();
       unsubscribeAudio();
+      unsubscribeUserTranscription();
       unsubscribeToolCall();
       unsubscribeError();
       unsubscribeReset();
@@ -158,28 +193,19 @@ export function useChat(options: UseChatOptions = {}) {
           }
         });
       } else {
-        sendText(content);
+        // If camera is active, capture the current frame to send inline with text
+        let frameBase64: string | undefined;
+        if (options.captureFrame) {
+          const dataUrl = options.captureFrame();
+          if (dataUrl) {
+            frameBase64 = dataUrl.startsWith("data:") ? dataUrl.split(",")[1] : dataUrl;
+          }
+        }
+        sendText(content, frameBase64);
       }
     },
     [sendText, sendPhoto]
   );
-
-  // Start voice input
-  const startVoiceInput = useCallback(
-    async (stream: MediaStream) => {
-      audioProcessorRef.current = new AudioProcessor();
-      await audioProcessorRef.current.start(stream, (base64Pcm) => {
-        sendAudioChunk(base64Pcm);
-      });
-    },
-    [sendAudioChunk]
-  );
-
-  // Stop voice input
-  const stopVoiceInput = useCallback(() => {
-    audioProcessorRef.current?.stop();
-    audioProcessorRef.current = null;
-  }, []);
 
   // Start video streaming (1 FPS)
   const startVideoStream = useCallback(
@@ -202,6 +228,23 @@ export function useChat(options: UseChatOptions = {}) {
       clearInterval(videoIntervalRef.current);
       videoIntervalRef.current = null;
     }
+  }, []);
+
+  // Start voice input
+  const startVoiceInput = useCallback(
+    async (stream: MediaStream) => {
+      audioProcessorRef.current = new AudioProcessor();
+      await audioProcessorRef.current.start(stream, (base64Pcm) => {
+        sendAudioChunk(base64Pcm);
+      });
+    },
+    [sendAudioChunk]
+  );
+
+  // Stop voice input
+  const stopVoiceInput = useCallback(() => {
+    audioProcessorRef.current?.stop();
+    audioProcessorRef.current = null;
   }, []);
 
   // Capture and send photo

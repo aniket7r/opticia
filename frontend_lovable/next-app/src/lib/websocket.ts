@@ -19,6 +19,7 @@ export type MessageType =
   | "ai.text"
   | "ai.audio"
   | "ai.tool_call"
+  | "user.transcription"
   | "audio.chunk"
   | "thinking.show"
   | "thinking.enabled"

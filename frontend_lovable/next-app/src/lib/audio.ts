@@ -61,11 +61,12 @@ export function downsample(
 
 /**
  * Audio processor using AudioWorklet for real-time PCM conversion.
+ * Falls back to ScriptProcessorNode if AudioWorklet is unavailable.
  */
 export class AudioProcessor {
   private audioContext: AudioContext | null = null;
   private mediaStreamSource: MediaStreamAudioSourceNode | null = null;
-  private workletNode: AudioWorkletNode | null = null;
+  private processorNode: AudioWorkletNode | ScriptProcessorNode | null = null;
   private stream: MediaStream | null = null;
   private onChunk: ((base64Pcm: string) => void) | null = null;
   private isProcessing = false;
@@ -92,20 +93,52 @@ export class AudioProcessor {
     // Create media stream source
     this.mediaStreamSource = this.audioContext.createMediaStreamSource(stream);
 
-    // Use ScriptProcessor as fallback (AudioWorklet requires HTTPS)
-    await this.setupScriptProcessor();
+    // Try AudioWorklet first, fall back to ScriptProcessor
+    try {
+      await this.setupAudioWorklet();
+    } catch {
+      console.warn("[AudioProcessor] AudioWorklet unavailable, using ScriptProcessor fallback");
+      this.setupScriptProcessor();
+    }
 
     this.isProcessing = true;
   }
 
-  private async setupScriptProcessor(): Promise<void> {
+  private async setupAudioWorklet(): Promise<void> {
+    if (!this.audioContext || !this.mediaStreamSource) return;
+
+    await this.audioContext.audioWorklet.addModule("/audio-worklet-processor.js");
+    const workletNode = new AudioWorkletNode(this.audioContext, "pcm-processor");
+
+    workletNode.port.onmessage = (event) => {
+      if (!this.isProcessing || !this.onChunk) return;
+
+      const { samples, sampleRate: sourceSampleRate } = event.data;
+
+      // Downsample to 16kHz
+      const downsampled = downsample(samples, sourceSampleRate, TARGET_SAMPLE_RATE);
+
+      // Convert to PCM16 and base64
+      const pcm16 = float32ToPcm16(downsampled);
+      const base64 = pcm16ToBase64(pcm16);
+
+      this.onChunk(base64);
+    };
+
+    this.mediaStreamSource.connect(workletNode);
+    // Connect to destination to keep the pipeline alive (output is silent)
+    workletNode.connect(this.audioContext.destination);
+
+    this.processorNode = workletNode;
+  }
+
+  private setupScriptProcessor(): void {
     if (!this.audioContext || !this.mediaStreamSource) return;
 
     const bufferSize = 4096;
-    // @ts-ignore - ScriptProcessorNode is deprecated but widely supported
     const scriptNode = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
 
-    scriptNode.onaudioprocess = (event) => {
+    scriptNode.onaudioprocess = (event: AudioProcessingEvent) => {
       if (!this.isProcessing || !this.onChunk) return;
 
       const inputData = event.inputBuffer.getChannelData(0);
@@ -129,8 +162,7 @@ export class AudioProcessor {
     this.mediaStreamSource.connect(scriptNode);
     scriptNode.connect(this.audioContext.destination);
 
-    // @ts-ignore
-    this.workletNode = scriptNode;
+    this.processorNode = scriptNode;
   }
 
   /**
@@ -139,9 +171,9 @@ export class AudioProcessor {
   stop(): void {
     this.isProcessing = false;
 
-    if (this.workletNode) {
-      this.workletNode.disconnect();
-      this.workletNode = null;
+    if (this.processorNode) {
+      this.processorNode.disconnect();
+      this.processorNode = null;
     }
 
     if (this.mediaStreamSource) {
@@ -159,12 +191,23 @@ export class AudioProcessor {
   }
 }
 
+// Shared AudioContext for decoding - created lazily
+let sharedDecodingContext: AudioContext | null = null;
+
+function getDecodingContext(): AudioContext {
+  if (!sharedDecodingContext || sharedDecodingContext.state === "closed") {
+    sharedDecodingContext = new AudioContext();
+  }
+  return sharedDecodingContext;
+}
+
 /**
  * Decodes base64 PCM audio to AudioBuffer for playback.
  */
 export async function decodePcmAudio(
   base64Pcm: string,
-  sampleRate: number = 24000
+  sampleRate: number = 24000,
+  audioContext?: AudioContext
 ): Promise<AudioBuffer> {
   // Decode base64 to bytes
   const binaryString = atob(base64Pcm);
@@ -182,9 +225,9 @@ export async function decodePcmAudio(
     float32[i] = pcm16[i] / (pcm16[i] < 0 ? 0x8000 : 0x7fff);
   }
 
-  // Create AudioBuffer
-  const audioContext = new AudioContext();
-  const audioBuffer = audioContext.createBuffer(1, float32.length, sampleRate);
+  // Use provided context or shared context
+  const ctx = audioContext || getDecodingContext();
+  const audioBuffer = ctx.createBuffer(1, float32.length, sampleRate);
   audioBuffer.copyToChannel(float32, 0);
 
   return audioBuffer;
@@ -211,28 +254,61 @@ export class AudioPlayer {
   async enqueue(base64Pcm: string, sampleRate: number = 24000): Promise<void> {
     if (!this.audioContext) return;
 
-    const buffer = await decodePcmAudio(base64Pcm, sampleRate);
-    this.queue.push(buffer);
+    try {
+      // Resume context if suspended (browser autoplay policy)
+      if (this.audioContext.state === "suspended") {
+        await this.audioContext.resume();
+      }
 
-    if (!this.isPlaying) {
-      this.playNext();
+      // Pass our context to avoid creating new ones
+      const buffer = await decodePcmAudio(base64Pcm, sampleRate, this.audioContext);
+      this.queue.push(buffer);
+
+      if (!this.isPlaying) {
+        this.playNext();
+      }
+    } catch (error) {
+      console.error("[AudioPlayer] Error enqueueing audio:", error);
     }
   }
 
-  private playNext(): void {
+  private async playNext(): Promise<void> {
     if (!this.audioContext || this.queue.length === 0) {
       this.isPlaying = false;
       return;
     }
 
+    // Check if context is in a bad state
+    if (this.audioContext.state === "closed") {
+      console.warn("[AudioPlayer] AudioContext is closed, recreating...");
+      this.audioContext = new AudioContext();
+    }
+
+    // Resume if suspended
+    if (this.audioContext.state === "suspended") {
+      try {
+        await this.audioContext.resume();
+      } catch (err) {
+        console.error("[AudioPlayer] Failed to resume context:", err);
+        this.isPlaying = false;
+        return;
+      }
+    }
+
     this.isPlaying = true;
     const buffer = this.queue.shift()!;
 
-    this.currentSource = this.audioContext.createBufferSource();
-    this.currentSource.buffer = buffer;
-    this.currentSource.connect(this.audioContext.destination);
-    this.currentSource.onended = () => this.playNext();
-    this.currentSource.start();
+    try {
+      this.currentSource = this.audioContext.createBufferSource();
+      this.currentSource.buffer = buffer;
+      this.currentSource.connect(this.audioContext.destination);
+      this.currentSource.onended = () => this.playNext();
+      this.currentSource.start();
+    } catch (error) {
+      console.error("[AudioPlayer] Error playing audio:", error);
+      // Try to continue with next chunk
+      this.playNext();
+    }
   }
 
   /**
@@ -240,7 +316,11 @@ export class AudioPlayer {
    */
   stop(): void {
     if (this.currentSource) {
-      this.currentSource.stop();
+      try {
+        this.currentSource.stop();
+      } catch {
+        // Ignore errors when stopping (may already be stopped)
+      }
       this.currentSource = null;
     }
     this.queue = [];

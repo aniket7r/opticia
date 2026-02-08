@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { MonitorOff, WifiOff, Wifi } from "lucide-react";
 import { FloatingPiP } from "@/components/chat/FloatingPiP";
 import { LargePreview } from "@/components/chat/LargePreview";
@@ -39,6 +39,19 @@ const AppPageClient = () => {
   // WebSocket connection
   const { isConnected, connectionState, sessionId } = useWebSocket();
 
+  // Camera hook (must be before useChat so captureFrame is available)
+  const camera = useCamera();
+
+  // Stable capture function for useChat - captures frame when camera is active
+  const captureFrameRef = useRef<(() => string | null) | null>(null);
+  captureFrameRef.current = () => {
+    if (camera.active) {
+      return camera.capturePhoto();
+    }
+    return null;
+  };
+  const stableCaptureFrame = useCallback(() => captureFrameRef.current?.() ?? null, []);
+
   // Chat hook with real backend integration
   const {
     messages,
@@ -59,6 +72,7 @@ const AppPageClient = () => {
     onError: (error) => {
       toast.error(error.message);
     },
+    captureFrame: stableCaptureFrame,
   });
 
   // Local state - initialize as false, check localStorage in useEffect to avoid hydration mismatch
@@ -126,10 +140,44 @@ const AppPageClient = () => {
 
   const currentChat = chats.find((c) => c.id === currentChatId);
 
-  // Camera and screen share hooks
-  const camera = useCamera();
+  // Screen share hook
   const screenShare = useScreenShare();
   const isRecordingRef = useRef(false);
+
+  // Voice streaming state
+  const [isVoiceStreaming, setIsVoiceStreaming] = useState(false);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+
+  const startVoice = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      audioStreamRef.current = stream;
+      await startVoiceInput(stream);
+      setIsVoiceStreaming(true);
+    } catch (err) {
+      console.error("Failed to start voice:", err);
+      toast.error("Microphone not available");
+    }
+  }, [startVoiceInput]);
+
+  const stopVoice = useCallback(() => {
+    stopVoiceInput();
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach((t) => t.stop());
+      audioStreamRef.current = null;
+    }
+    setIsVoiceStreaming(false);
+  }, [stopVoiceInput]);
+
+  const handleToggleVoice = useCallback(async () => {
+    if (isVoiceStreaming) {
+      stopVoice();
+    } else {
+      await startVoice();
+    }
+  }, [isVoiceStreaming, startVoice, stopVoice]);
 
   // Auto-start video streaming when camera is active
   useEffect(() => {
@@ -139,6 +187,17 @@ const AppPageClient = () => {
       stopVideoStream();
     }
   }, [camera.active, isConnected, startVideoStream, stopVideoStream, camera]);
+
+  // Auto-start voice streaming when camera becomes active
+  useEffect(() => {
+    if (camera.active && isConnected && !isVoiceStreaming) {
+      startVoice();
+    }
+    if (!camera.active && isVoiceStreaming) {
+      stopVoice();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camera.active, isConnected]);
 
   // Handlers
   const handleRenameChat = useCallback(
@@ -385,6 +444,8 @@ const AppPageClient = () => {
                     onCapturePhoto={handleCapturePhoto}
                     onScreenShare={handleScreenShare}
                     isScreenSharing={screenShare.active}
+                    isVoiceStreaming={isVoiceStreaming}
+                    onToggleVoice={handleToggleVoice}
                   />
                 </div>
               </div>

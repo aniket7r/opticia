@@ -32,7 +32,7 @@ interface WebSocketContextType {
   subscribe: (type: MessageType, handler: MessageHandler) => () => void;
 
   // Convenience methods
-  sendText: (content: string) => void;
+  sendText: (content: string, frameBase64?: string, extraFrames?: string[]) => void;
   sendAudioChunk: (data: string) => void;
   sendVideoFrame: (data: string) => void;
   sendPhoto: (data: string, context?: string) => void;
@@ -116,8 +116,12 @@ export function WebSocketProvider({
   }, []);
 
   // Convenience methods
-  const sendText = useCallback((content: string) => {
-    send("text.send", { content });
+  const sendText = useCallback((content: string, frameBase64?: string, extraFrames?: string[]) => {
+    send("text.send", {
+      content,
+      ...(frameBase64 ? { frame: frameBase64 } : {}),
+      ...(extraFrames?.length ? { extraFrames } : {}),
+    });
   }, [send]);
 
   const sendAudioChunk = useCallback((data: string) => {

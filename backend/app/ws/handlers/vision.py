@@ -5,6 +5,7 @@ from typing import Any
 
 from app.services.gemini_service import gemini_service
 from app.ws.connection import ConnectionState
+from app.ws.handlers.gemini import _ensure_receive_loop, _get_or_create_session
 
 logger = logging.getLogger(__name__)
 
@@ -23,22 +24,13 @@ async def handle_video_frame(state: ConnectionState, payload: dict[str, Any]) ->
         return
 
     try:
-        session = gemini_service.get_session(state.session_id)
+        session = await _get_or_create_session(state)
         if not session:
-            logger.info(f"Creating Gemini session for video: {state.session_id}")
-            session = await gemini_service.create_session(state.session_id, state.mode)
-
-        # Check if we need to reconnect
-        if session.should_reconnect:
-            await state.send("session.reconnecting", {"timeRemaining": session.time_remaining})
-            session = await gemini_service.reconnect_session(state.session_id)
-            if not session:
-                await state.send_error("reconnect_failed", "Failed to reconnect session")
-                return
-            await state.send("session.reconnected", {})
+            return
 
         # Send frame - fire-and-forget for video streaming
-        # Responses come through the audio/text receive loop
+        # Responses come through the background receive loop
+        logger.info(f"Sending video frame to Gemini: {len(frame_data)} chars, mime: {mime_type}")
         await session.send_video_frame(frame_data, mime_type)
     except Exception as e:
         error_msg = str(e) if str(e) else "Unknown vision error"
@@ -49,7 +41,7 @@ async def handle_video_frame(state: ConnectionState, payload: dict[str, Any]) ->
 async def handle_photo_capture(state: ConnectionState, payload: dict[str, Any]) -> None:
     """Handle photo.capture message - analyze a single photo.
 
-    Unlike video frames, photos get immediate analysis response.
+    Sends image + text prompt. Responses come via the background receive loop.
     """
     photo_data = payload.get("data", "")  # base64 encoded image
     mime_type = payload.get("mimeType", "image/jpeg")
@@ -59,28 +51,16 @@ async def handle_photo_capture(state: ConnectionState, payload: dict[str, Any]) 
         await state.send_error("empty_photo", "Photo data is required")
         return
 
-    session = gemini_service.get_session(state.session_id)
-    if not session:
-        session = await gemini_service.create_session(state.session_id, state.mode)
-
-    # Check if we need to reconnect
-    if session.should_reconnect:
-        await state.send("session.reconnecting", {})
-        session = await gemini_service.reconnect_session(state.session_id)
+    try:
+        session = await _get_or_create_session(state)
         if not session:
-            await state.send_error("reconnect_failed", "Failed to reconnect session")
             return
 
-    try:
         # Create prompt based on context
         prompt = context if context else "Analyze this image and describe what you see."
 
-        async for chunk in session.send_image(photo_data, mime_type, prompt):
-            if chunk["type"] == "text":
-                await state.send(
-                    "ai.text",
-                    {"content": chunk["content"], "complete": chunk.get("complete", False)},
-                )
+        # Fire-and-forget: send image + prompt, responses come via receive loop
+        await session.send_image(photo_data, mime_type, prompt)
     except Exception as e:
         logger.error(f"Photo analysis error: {e}")
         await state.send_error("vision_error", str(e))

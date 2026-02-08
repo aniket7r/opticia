@@ -5,10 +5,11 @@ Based on official documentation:
 - https://googleapis.github.io/python-genai/
 """
 
+import asyncio
 import base64
 import logging
 from datetime import datetime, timezone
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Callable, Awaitable
 
 from google import genai
 from google.genai import types
@@ -36,6 +37,9 @@ AUDIO_OUTPUT_SAMPLE_RATE = 24000
 # See: https://ai.google.dev/gemini-api/docs/models
 LIVE_API_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
+# Type alias for the response callback
+ResponseCallback = Callable[[dict[str, Any]], Awaitable[None]]
+
 
 class GeminiSession:
     """Manages a single Gemini Live API session.
@@ -43,6 +47,9 @@ class GeminiSession:
     Uses the official google-genai SDK methods:
     - send_client_content() for text (deterministic ordering)
     - send_realtime_input() for audio/video (low-latency streaming)
+
+    Architecture: A single background receive loop handles ALL responses
+    from Gemini. Sending methods (text, audio, video) are fire-and-forget.
     """
 
     def __init__(self, session_id: str, mode: str = "voice") -> None:
@@ -57,6 +64,8 @@ class GeminiSession:
         self._session: Any = None
         self._context_manager: Any = None  # Store the context manager
         self._is_active = False
+        self._receive_task: asyncio.Task | None = None
+        self._response_callback: ResponseCallback | None = None
 
     @property
     def session_timeout(self) -> int:
@@ -86,16 +95,18 @@ class GeminiSession:
         base_prompt = """You are Opticia AI, a helpful visual assistant that can see through the user's camera and guide them with voice or text.
 
 ## Core Capabilities
-- Real-time visual understanding through camera feed
-- Step-by-step guidance for tasks
+- Real-time visual understanding through the camera feed sent to you as video frames
+- Step-by-step guidance for tasks based on what you see
 - Voice conversation with natural responses
 - Text alternative when voice isn't available
+- When the user asks you to search the web, include [SEARCH: query] in your response and the system will provide results
 
 ## Interaction Style
 - Be concise but friendly
+- When the user shows you something via camera, describe what you see
+- IMPORTANT: Always describe what is CURRENTLY visible in the most recent frame. The user may change what they are showing between turns. Never assume the scene is the same as before - always look at the latest image.
 - Ask clarifying questions when needed
-- Provide clear, actionable guidance
-- Show your reasoning when solving problems"""
+- Provide clear, actionable guidance"""
 
         return base_prompt + get_safety_prompt_addition()
 
@@ -118,29 +129,20 @@ class GeminiSession:
         # Create client
         self._client = genai.Client(api_key=settings.gemini_api_key)
 
-        # Build tool definitions for Gemini
-        tool_definitions = tool_registry.get_definitions()
-        tools = None
-        if tool_definitions:
-            tools = [
-                types.Tool(
-                    function_declarations=[
-                        types.FunctionDeclaration(
-                            name=t["name"],
-                            description=t["description"],
-                            parameters=t["parameters"],
-                        )
-                        for t in tool_definitions
-                    ]
-                )
-            ]
+        # IMPORTANT: Custom function declaration tools break video input
+        # in the native audio model. When tools are configured, the model
+        # cannot process video frames. We use Google Search grounding instead
+        # and handle custom tools outside the Live API session.
+        # See: tools + video incompatibility in gemini-2.5-flash-native-audio
 
         # Build config - enable transcription to get text from audio responses
         # This allows text mode to work even though the model returns audio
         config = types.LiveConnectConfig(
             response_modalities=[response_modality],
-            system_instruction=self._build_system_prompt(),
-            tools=tools,
+            system_instruction=types.Content(
+                parts=[types.Part(text=self._build_system_prompt())]
+            ),
+            input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
         )
 
@@ -161,127 +163,173 @@ class GeminiSession:
         self._is_active = True
         logger.info(f"Gemini session started: {self.session_id}, mode={self.mode}, model={model}")
 
-    async def send_text(self, text: str) -> AsyncGenerator[dict[str, Any], None]:
-        """Send text using send_client_content (deterministic ordering)."""
-        if not self._session or not self._is_active:
-            raise RuntimeError("Session not active")
+    async def start_receive_loop(self, callback: ResponseCallback) -> None:
+        """Start background receive loop that forwards all Gemini responses.
 
-        logger.info(f"Sending text to Gemini: {text[:50]}...")
-
-        # Use send_client_content for text (per SDK docs)
-        await self._session.send_client_content(
-            turns=[types.Content(parts=[types.Part(text=text)])],
-            turn_complete=True,
+        The callback receives dicts with types: text, audio, tool_call, turn_complete, error.
+        Only one receive loop runs per session.
+        """
+        if self._receive_task and not self._receive_task.done():
+            # Already running - just update callback (for reconnect scenarios)
+            self._response_callback = callback
+            return
+        self._response_callback = callback
+        self._receive_task = asyncio.create_task(
+            self._receive_loop(),
+            name=f"gemini-receive-{self.session_id}",
         )
 
-        received_response = False
+    async def _receive_loop(self) -> None:
+        """Background task that receives ALL responses from Gemini.
+
+        Handles text, audio, transcription, and tool calls.
+        Tool calls are executed inline and results sent back to Gemini.
+
+        The outer while loop re-calls receive() after each turn completes,
+        since the SDK's receive() iterator ends per turn.
+        """
+        from app.services.tools.registry import tool_registry
+
+        logger.info(f"Receive loop started for session {self.session_id}")
         try:
-            async for response in self._session.receive():
-                logger.debug(f"Received response type: {type(response).__name__}")
+            while self._is_active and self._session:
+                try:
+                    async for response in self._session.receive():
+                        if not self._is_active:
+                            break
 
-                if response.server_content:
-                    # Extract text from response
-                    if response.server_content.model_turn:
-                        for part in response.server_content.model_turn.parts:
-                            if part.text:
-                                received_response = True
-                                yield {
-                                    "type": "text",
-                                    "content": part.text,
-                                    "complete": response.server_content.turn_complete,
-                                }
-                            # Handle audio response
-                            if hasattr(part, 'inline_data') and part.inline_data:
-                                received_response = True
-                                audio_data = part.inline_data.data
-                                if isinstance(audio_data, bytes):
-                                    audio_data = base64.b64encode(audio_data).decode()
-                                yield {
-                                    "type": "audio",
-                                    "data": audio_data,
-                                    "sampleRate": AUDIO_OUTPUT_SAMPLE_RATE,
-                                }
+                        # Handle server content (text, audio, transcription)
+                        if response.server_content:
+                            if response.server_content.model_turn:
+                                for part in response.server_content.model_turn.parts:
+                                    if part.text:
+                                        await self._emit({
+                                            "type": "text",
+                                            "content": part.text,
+                                            "complete": response.server_content.turn_complete or False,
+                                        })
+                                    if hasattr(part, 'inline_data') and part.inline_data:
+                                        audio_data = part.inline_data.data
+                                        if isinstance(audio_data, bytes):
+                                            audio_data = base64.b64encode(audio_data).decode()
+                                        await self._emit({
+                                            "type": "audio",
+                                            "data": audio_data,
+                                            "sampleRate": AUDIO_OUTPUT_SAMPLE_RATE,
+                                        })
 
-                    # Handle audio transcription if available
-                    if hasattr(response.server_content, 'output_transcription') and response.server_content.output_transcription:
-                        transcription = response.server_content.output_transcription
-                        if hasattr(transcription, 'text') and transcription.text:
-                            received_response = True
-                            yield {
-                                "type": "text",
-                                "content": transcription.text,
-                                "complete": response.server_content.turn_complete,
-                            }
+                            # Handle output audio transcription (AI speech → text)
+                            if hasattr(response.server_content, 'output_transcription') and response.server_content.output_transcription:
+                                transcription = response.server_content.output_transcription
+                                if hasattr(transcription, 'text') and transcription.text:
+                                    await self._emit({
+                                        "type": "text",
+                                        "content": transcription.text,
+                                        "complete": response.server_content.turn_complete or False,
+                                    })
 
-                # Handle tool calls
-                if response.tool_call:
-                    received_response = True
-                    self.tool_call_count += 1
-                    for fc in response.tool_call.function_calls:
-                        yield {
-                            "type": "tool_call",
-                            "name": fc.name,
-                            "args": dict(fc.args) if fc.args else {},
-                        }
+                            # Handle input audio transcription (user speech → text)
+                            if hasattr(response.server_content, 'input_transcription') and response.server_content.input_transcription:
+                                transcription = response.server_content.input_transcription
+                                if hasattr(transcription, 'text') and transcription.text:
+                                    logger.info(f"Input transcription: '{transcription.text[:80]}'")
+                                    await self._emit({
+                                        "type": "input_transcription",
+                                        "content": transcription.text,
+                                    })
 
-                    # Attention recitation every 5 tool calls (Manus pattern)
-                    if self.tool_call_count % 5 == 0:
-                        await self._recite_attention()
+                            if response.server_content.turn_complete:
+                                await self._emit({"type": "turn_complete"})
 
-                # Check if turn is complete
-                if response.server_content and response.server_content.turn_complete:
-                    break
-        except Exception as e:
-            logger.error(f"Error receiving from Gemini: {e}", exc_info=True)
-            raise
+                        # Handle tool calls (if tools ever re-enabled)
+                        if response.tool_call:
+                            self.tool_call_count += 1
+                            for fc in response.tool_call.function_calls:
+                                await self._emit({
+                                    "type": "tool_call",
+                                    "name": fc.name,
+                                    "args": dict(fc.args) if fc.args else {},
+                                })
+                                tool_result = await tool_registry.execute(
+                                    fc.name, dict(fc.args) if fc.args else {}
+                                )
+                                func_response = types.FunctionResponse(
+                                    id=fc.id,
+                                    name=fc.name,
+                                    response={"result": str(tool_result.result) if tool_result.success else tool_result.error},
+                                )
+                                await self._session.send_tool_response(
+                                    function_responses=[func_response]
+                                )
 
-        if not received_response:
-            logger.warning("No response received from Gemini")
+                except asyncio.CancelledError:
+                    raise  # Propagate cancellation
+                except Exception as e:
+                    if not self._is_active:
+                        break
+                    logger.error(f"Receive iteration error for {self.session_id}: {e}", exc_info=True)
+                    await self._emit({"type": "error", "message": str(e)})
+                    # Brief pause before retrying receive
+                    await asyncio.sleep(0.1)
 
-        # Append to context history (append-only for cache)
-        self.context_history.append({"role": "user", "content": text})
+        except asyncio.CancelledError:
+            logger.info(f"Receive loop cancelled for session {self.session_id}")
+        finally:
+            logger.info(f"Receive loop ended for session {self.session_id}")
 
-    async def send_audio(self, audio_data: bytes) -> AsyncGenerator[dict[str, Any], None]:
-        """Send audio using send_realtime_input (low-latency streaming).
+    async def _emit(self, data: dict[str, Any]) -> None:
+        """Emit response to the registered callback."""
+        if self._response_callback:
+            try:
+                await self._response_callback(data)
+            except Exception as e:
+                logger.error(f"Error in response callback: {e}")
 
-        Audio format: 16-bit PCM, 16kHz, mono (per official docs)
+    async def send_text_message(self, text: str, frame_b64: str | None = None) -> None:
+        """Send text to Gemini (fire-and-forget).
+
+        Uses send_client_content() for deterministic ordering.
+        When frame_b64 is provided, includes the camera frame inline
+        so Gemini sees the image in the same turn as the text question.
+        Responses come through the background receive loop.
         """
         if not self._session or not self._is_active:
             raise RuntimeError("Session not active")
 
-        # Use send_realtime_input for audio (per SDK docs)
+        parts = []
+        if frame_b64:
+            logger.info(f"Sending text+frame to Gemini: {text[:50]}... (frame: {len(frame_b64)} chars)")
+            self.has_video = True
+            parts.append(types.Part(
+                inline_data=types.Blob(mime_type="image/jpeg", data=frame_b64)
+            ))
+        else:
+            logger.info(f"Sending text to Gemini: {text[:50]}...")
+        parts.append(types.Part(text=text))
+
+        await self._session.send_client_content(
+            turns=[types.Content(parts=parts)],
+            turn_complete=True,
+        )
+
+        self.context_history.append({"role": "user", "content": text})
+
+    async def send_audio_chunk(self, audio_data: bytes) -> None:
+        """Send audio chunk to Gemini (fire-and-forget).
+
+        Uses send_realtime_input() for low-latency streaming.
+        Audio format: 16-bit PCM, 16kHz, mono (per official docs).
+        Responses come through the background receive loop.
+        """
+        if not self._session or not self._is_active:
+            raise RuntimeError("Session not active")
+
         await self._session.send_realtime_input(
             audio=types.Blob(
                 mime_type="audio/pcm",
                 data=base64.b64encode(audio_data).decode(),
             )
         )
-
-        # Stream responses
-        async for response in self._session.receive():
-            if response.server_content:
-                if response.server_content.model_turn:
-                    for part in response.server_content.model_turn.parts:
-                        # Text response
-                        if part.text:
-                            yield {"type": "text", "content": part.text}
-
-                        # Audio response (inline_data)
-                        if part.inline_data and isinstance(part.inline_data.data, bytes):
-                            yield {
-                                "type": "audio",
-                                "data": base64.b64encode(part.inline_data.data).decode(),
-                                "sampleRate": AUDIO_OUTPUT_SAMPLE_RATE,
-                            }
-
-                # Handle audio transcription
-                if hasattr(response.server_content, 'output_transcription') and response.server_content.output_transcription:
-                    transcription = response.server_content.output_transcription
-                    if hasattr(transcription, 'text') and transcription.text:
-                        yield {"type": "text", "content": transcription.text}
-
-                if response.server_content.turn_complete:
-                    break
 
     async def send_video_frame(
         self,
@@ -291,7 +339,7 @@ class GeminiSession:
         """Send video frame using send_realtime_input.
 
         Note: Video is processed at 1 FPS by Gemini.
-        This is fire-and-forget - responses come through audio/text flow.
+        This is fire-and-forget - responses come through the receive loop.
         """
         if not self._session or not self._is_active:
             raise RuntimeError("Session not active")
@@ -306,16 +354,17 @@ class GeminiSession:
                 data=frame_b64,
             )
         )
-        # Video frames don't get immediate responses
-        # AI responds based on accumulated visual context
 
     async def send_image(
         self,
         image_b64: str,
         mime_type: str = "image/jpeg",
         prompt: str | None = None,
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        """Send a single image with optional prompt for analysis."""
+    ) -> None:
+        """Send a single image with optional prompt for analysis.
+
+        Fire-and-forget - responses come through the receive loop.
+        """
         if not self._session or not self._is_active:
             raise RuntimeError("Session not active")
 
@@ -329,14 +378,9 @@ class GeminiSession:
             )
         )
 
-        # If there's a prompt, send it as text
-        if prompt:
-            async for chunk in self.send_text(prompt):
-                yield chunk
-        else:
-            # Request description
-            async for chunk in self.send_text("What do you see in this image?"):
-                yield chunk
+        # Send prompt as text
+        text = prompt if prompt else "What do you see in this image?"
+        await self.send_text_message(text)
 
     async def _recite_attention(self) -> None:
         """Recite running summary to prevent goal drift (Manus pattern)."""
@@ -374,8 +418,17 @@ class GeminiSession:
         return session
 
     async def close(self) -> None:
-        """Close the session."""
+        """Close the session and cancel background tasks."""
         self._is_active = False
+
+        # Cancel receive loop
+        if self._receive_task and not self._receive_task.done():
+            self._receive_task.cancel()
+            try:
+                await self._receive_task
+            except asyncio.CancelledError:
+                pass
+
         if self._session:
             try:
                 # Use close() method if available
