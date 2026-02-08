@@ -117,7 +117,16 @@ class GeminiSession:
             response_modality = "TEXT"
 
         logger.info(f"Starting Gemini session with model: {model}, mode: {self.mode}")
-        self._client = genai.Client(api_key=settings.gemini_api_key)
+
+        # Native audio models require v1alpha API version
+        # See: https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started_LiveAPI_NativeAudio.py
+        if self.mode == "voice":
+            self._client = genai.Client(
+                api_key=settings.gemini_api_key,
+                http_options={"api_version": "v1alpha"}
+            )
+        else:
+            self._client = genai.Client(api_key=settings.gemini_api_key)
 
         # Build tool definitions for Gemini
         tool_definitions = tool_registry.get_definitions()
@@ -136,9 +145,10 @@ class GeminiSession:
                 )
             ]
 
-        # Build config - for audio mode, enable transcription to get text from audio
-        # See: https://github.com/googleapis/python-genai/issues/380
+        # Build config based on mode
+        # See: https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started_LiveAPI_NativeAudio.py
         if self.mode == "voice":
+            # Native audio config - enable transcription for text output alongside audio
             config = types.LiveConnectConfig(
                 response_modalities=[response_modality],
                 system_instruction=self._build_system_prompt(),
@@ -146,6 +156,7 @@ class GeminiSession:
                 output_audio_transcription=types.AudioTranscriptionConfig(),
             )
         else:
+            # Text mode config
             config = types.LiveConnectConfig(
                 response_modalities=[response_modality],
                 system_instruction=self._build_system_prompt(),
