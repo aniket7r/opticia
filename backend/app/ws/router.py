@@ -108,11 +108,13 @@ async def websocket_session(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {state.session_id}")
     except Exception as e:
-        logger.error(f"WebSocket error: {state.session_id}, {e}")
+        error_msg = str(e) if str(e) else "Unknown error"
+        logger.error(f"WebSocket error for {state.session_id}: {error_msg}", exc_info=True)
         try:
+            # Send more detailed error to client for debugging
             await state.send_error(
                 code="internal_error",
-                message="An internal error occurred",
+                message=f"Internal error: {error_msg[:200]}",
                 recoverable=False,
             )
         except Exception:
