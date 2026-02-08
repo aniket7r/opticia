@@ -135,11 +135,13 @@ class GeminiSession:
                 )
             ]
 
-        # Build simple config
+        # Build config - enable transcription to get text from audio responses
+        # This allows text mode to work even though the model returns audio
         config = types.LiveConnectConfig(
             response_modalities=[response_modality],
             system_instruction=self._build_system_prompt(),
             tools=tools,
+            output_audio_transcription=types.AudioTranscriptionConfig(),
         )
 
         # Connect using proper async context manager pattern
