@@ -29,13 +29,12 @@ RECONNECT_BUFFER_SECONDS = 15  # Reconnect before timeout
 AUDIO_INPUT_SAMPLE_RATE = 16000
 AUDIO_OUTPUT_SAMPLE_RATE = 24000
 
-# Models for Live API
+# Model for Live API
 # IMPORTANT: Do NOT include "models/" prefix - the SDK adds it automatically
-# - Native audio model: for AUDIO responses (voice mode)
-# - Live flash model: for TEXT responses (text mode)
+# Only the native audio model supports Live API (bidiGenerateContent)
+# It returns both text (thinking) and audio responses
 # See: https://ai.google.dev/gemini-api/docs/models
-LIVE_API_MODEL_AUDIO = "gemini-2.5-flash-native-audio-preview-12-2025"
-LIVE_API_MODEL_TEXT = "gemini-live-2.5-flash-preview"
+LIVE_API_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
 
 class GeminiSession:
@@ -107,15 +106,12 @@ class GeminiSession:
         if not settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
 
-        # Select model based on mode
-        # Voice mode: native audio model with AUDIO response
-        # Text mode: live flash model with TEXT response
-        if self.mode == "voice":
-            model = LIVE_API_MODEL_AUDIO
-            response_modality = "AUDIO"
-        else:
-            model = LIVE_API_MODEL_TEXT
-            response_modality = "TEXT"
+        # Use the native audio model for all modes
+        # It's the only model that supports Live API (bidiGenerateContent)
+        # It returns both text (thinking) and audio responses
+        model = LIVE_API_MODEL
+        # Native audio model only supports AUDIO response modality
+        response_modality = "AUDIO"
 
         logger.info(f"Starting Gemini session with model: {model}, mode: {self.mode}, modality: {response_modality}")
 
