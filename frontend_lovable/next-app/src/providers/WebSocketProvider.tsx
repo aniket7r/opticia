@@ -72,7 +72,7 @@ export function WebSocketProvider({
       },
       onError: (err) => {
         setError(err);
-        console.warn("[WebSocket] Error:", err);
+        console.warn("[WebSocket] Error:", err.code, "-", err.message, "(recoverable:", err.recoverable, ")");
       },
       onMessage: (message) => {
         // Handle session ID updates

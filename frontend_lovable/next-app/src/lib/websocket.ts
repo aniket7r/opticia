@@ -150,6 +150,7 @@ export class WebSocketClient {
     this.ws.onmessage = (event) => {
       try {
         const message: WSMessage = JSON.parse(event.data);
+        console.log("[WS] Received:", message.type, message.payload ? JSON.stringify(message.payload).substring(0, 100) : "");
         this.handleMessage(message);
       } catch (error) {
         console.error("[WS] Failed to parse message:", error);
