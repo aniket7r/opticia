@@ -29,11 +29,11 @@ RECONNECT_BUFFER_SECONDS = 15  # Reconnect before timeout
 AUDIO_INPUT_SAMPLE_RATE = 16000
 AUDIO_OUTPUT_SAMPLE_RATE = 24000
 
-# Model for Live API (updated Feb 2026)
-# Previous models (shutdown Dec 2025): gemini-2.0-flash-live-preview-04-09, gemini-2.0-flash-live-001
-# Current: Gemini 2.0 Flash experimental with live/multimodal support
-# See: https://ai.google.dev/gemini-api/docs/models for latest model names
-LIVE_API_MODEL = "gemini-2.0-flash-exp"
+# Model for Live API
+# For Gemini Live API, use models with live/realtime support
+# Options: "gemini-2.0-flash-exp", "models/gemini-2.0-flash-exp"
+# See: https://ai.google.dev/gemini-api/docs/models
+LIVE_API_MODEL = settings.gemini_model if hasattr(settings, 'gemini_model') and settings.gemini_model else "models/gemini-2.0-flash-exp"
 
 
 class GeminiSession:
@@ -101,6 +101,10 @@ class GeminiSession:
         """Start a new Gemini Live session."""
         from app.services.tools.registry import tool_registry
 
+        if not settings.gemini_api_key:
+            raise RuntimeError("GEMINI_API_KEY is not configured")
+
+        logger.info(f"Starting Gemini session with model: {LIVE_API_MODEL}")
         self._client = genai.Client(api_key=settings.gemini_api_key)
 
         # Per docs: Can only set ONE response modality per session
@@ -130,14 +134,18 @@ class GeminiSession:
         )
 
         # Connect and enter session context
-        self._session = await self._client.aio.live.connect(
-            model=LIVE_API_MODEL,
-            config=config,
-        ).__aenter__()
+        try:
+            self._session = await self._client.aio.live.connect(
+                model=LIVE_API_MODEL,
+                config=config,
+            ).__aenter__()
+        except Exception as e:
+            logger.error(f"Failed to connect to Gemini Live API: {e}")
+            raise RuntimeError(f"Failed to connect to Gemini: {str(e)}")
 
         self.started_at = datetime.now(timezone.utc)
         self._is_active = True
-        logger.info(f"Gemini session started: {self.session_id}, mode={self.mode}")
+        logger.info(f"Gemini session started: {self.session_id}, mode={self.mode}, model={LIVE_API_MODEL}")
 
     async def send_text(self, text: str) -> AsyncGenerator[dict[str, Any], None]:
         """Send text using send_client_content (deterministic ordering)."""

@@ -264,9 +264,9 @@ const AppPageClient = () => {
     (id: string) => {
       setCurrentChatId(id);
       // Note: In a full implementation, we'd load messages from storage/backend
-      clearChat();
+      // Don't call clearChat() here - that resets the backend session
     },
-    [clearChat]
+    []
   );
 
   // Show loading state until hydrated
