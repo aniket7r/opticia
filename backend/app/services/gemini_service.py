@@ -29,13 +29,10 @@ RECONNECT_BUFFER_SECONDS = 15  # Reconnect before timeout
 AUDIO_INPUT_SAMPLE_RATE = 16000
 AUDIO_OUTPUT_SAMPLE_RATE = 24000
 
-# Models for Live API - different models for text vs audio responses
-# See: https://ai.google.dev/gemini-api/docs/live-guide
-# - TEXT mode: gemini-live-2.5-flash-preview (supports text responses)
-# - AUDIO mode: gemini-2.5-flash-native-audio-preview-12-2025 (supports audio responses)
-# Note: Gemini 3 models do NOT support Live API yet (as of Feb 2026)
-LIVE_API_MODEL_TEXT = "models/gemini-live-2.5-flash-preview"
-LIVE_API_MODEL_AUDIO = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+# Models for Live API
+# Use the stable model that works with bidiGenerateContent
+# See: https://ai.google.dev/gemini-api/docs/models
+LIVE_API_MODEL = "models/gemini-2.0-flash-exp"
 
 
 class GeminiSession:
@@ -56,6 +53,7 @@ class GeminiSession:
         self.running_summary = ""
         self._client: genai.Client | None = None
         self._session: Any = None
+        self._context_manager: Any = None  # Store the context manager
         self._is_active = False
 
     @property
@@ -106,27 +104,16 @@ class GeminiSession:
         if not settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
 
-        # Select model based on mode
-        # TEXT mode needs gemini-live-2.5-flash-preview
-        # AUDIO mode needs gemini-2.5-flash-native-audio-preview
-        if self.mode == "voice":
-            model = LIVE_API_MODEL_AUDIO
-            response_modality = "AUDIO"
-        else:
-            model = LIVE_API_MODEL_TEXT
-            response_modality = "TEXT"
+        # Use gemini-2.0-flash-exp which supports both text and audio
+        model = LIVE_API_MODEL
 
-        logger.info(f"Starting Gemini session with model: {model}, mode: {self.mode}")
+        # Determine response modality based on mode
+        response_modality = "AUDIO" if self.mode == "voice" else "TEXT"
 
-        # Native audio models require v1alpha API version
-        # See: https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started_LiveAPI_NativeAudio.py
-        if self.mode == "voice":
-            self._client = genai.Client(
-                api_key=settings.gemini_api_key,
-                http_options={"api_version": "v1alpha"}
-            )
-        else:
-            self._client = genai.Client(api_key=settings.gemini_api_key)
+        logger.info(f"Starting Gemini session with model: {model}, mode: {self.mode}, modality: {response_modality}")
+
+        # Create client
+        self._client = genai.Client(api_key=settings.gemini_api_key)
 
         # Build tool definitions for Gemini
         tool_definitions = tool_registry.get_definitions()
@@ -145,32 +132,24 @@ class GeminiSession:
                 )
             ]
 
-        # Build config based on mode
-        # See: https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started_LiveAPI_NativeAudio.py
-        if self.mode == "voice":
-            # Native audio config - enable transcription for text output alongside audio
-            config = types.LiveConnectConfig(
-                response_modalities=[response_modality],
-                system_instruction=self._build_system_prompt(),
-                tools=tools,
-                output_audio_transcription=types.AudioTranscriptionConfig(),
-            )
-        else:
-            # Text mode config
-            config = types.LiveConnectConfig(
-                response_modalities=[response_modality],
-                system_instruction=self._build_system_prompt(),
-                tools=tools,
-            )
+        # Build simple config
+        config = types.LiveConnectConfig(
+            response_modalities=[response_modality],
+            system_instruction=self._build_system_prompt(),
+            tools=tools,
+        )
 
-        # Connect and enter session context
+        # Connect using proper async context manager pattern
         try:
-            self._session = await self._client.aio.live.connect(
+            # Create the context manager
+            self._context_manager = self._client.aio.live.connect(
                 model=model,
                 config=config,
-            ).__aenter__()
+            )
+            # Enter the context
+            self._session = await self._context_manager.__aenter__()
         except Exception as e:
-            logger.error(f"Failed to connect to Gemini Live API: {e}")
+            logger.error(f"Failed to connect to Gemini Live API: {e}", exc_info=True)
             raise RuntimeError(f"Failed to connect to Gemini: {str(e)}")
 
         self.started_at = datetime.now(timezone.utc)
@@ -193,10 +172,10 @@ class GeminiSession:
         received_response = False
         try:
             async for response in self._session.receive():
-                logger.debug(f"Received response: {type(response)}")
+                logger.debug(f"Received response type: {type(response).__name__}")
 
                 if response.server_content:
-                    # Extract text from response (for text model)
+                    # Extract text from response
                     if response.server_content.model_turn:
                         for part in response.server_content.model_turn.parts:
                             if part.text:
@@ -206,17 +185,19 @@ class GeminiSession:
                                     "content": part.text,
                                     "complete": response.server_content.turn_complete,
                                 }
-                            # Handle audio response (for native audio model)
+                            # Handle audio response
                             if hasattr(part, 'inline_data') and part.inline_data:
                                 received_response = True
+                                audio_data = part.inline_data.data
+                                if isinstance(audio_data, bytes):
+                                    audio_data = base64.b64encode(audio_data).decode()
                                 yield {
                                     "type": "audio",
-                                    "data": base64.b64encode(part.inline_data.data).decode() if isinstance(part.inline_data.data, bytes) else part.inline_data.data,
+                                    "data": audio_data,
                                     "sampleRate": AUDIO_OUTPUT_SAMPLE_RATE,
                                 }
 
-                    # Handle audio transcription (for native audio model with transcription enabled)
-                    # See: https://github.com/googleapis/python-genai/issues/380
+                    # Handle audio transcription if available
                     if hasattr(response.server_content, 'output_transcription') and response.server_content.output_transcription:
                         transcription = response.server_content.output_transcription
                         if hasattr(transcription, 'text') and transcription.text:
@@ -392,7 +373,12 @@ class GeminiSession:
         self._is_active = False
         if self._session:
             try:
-                await self._session.__aexit__(None, None, None)
+                # Use close() method if available
+                if hasattr(self._session, 'close'):
+                    await self._session.close()
+                # Otherwise try to exit the context manager
+                elif self._context_manager:
+                    await self._context_manager.__aexit__(None, None, None)
             except Exception as e:
                 logger.warning(f"Error closing session: {e}")
         logger.info(f"Gemini session closed: {self.session_id}")
