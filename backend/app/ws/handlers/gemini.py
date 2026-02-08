@@ -40,6 +40,12 @@ async def handle_text_message(state: ConnectionState, payload: dict[str, Any]) -
                     "ai.text",
                     {"content": chunk["content"], "complete": chunk.get("complete", False)},
                 )
+            elif chunk["type"] == "audio":
+                # Handle audio response (for voice mode)
+                await state.send(
+                    "ai.audio",
+                    {"data": chunk["data"], "sampleRate": chunk.get("sampleRate", 24000)},
+                )
             elif chunk["type"] == "tool_call":
                 # Record tool call metric
                 await metrics_collector.record_tool_call(
