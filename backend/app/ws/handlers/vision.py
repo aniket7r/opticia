@@ -22,27 +22,28 @@ async def handle_video_frame(state: ConnectionState, payload: dict[str, Any]) ->
         await state.send_error("empty_frame", "Frame data is required")
         return
 
-    session = gemini_service.get_session(state.session_id)
-    if not session:
-        session = await gemini_service.create_session(state.session_id, state.mode)
-
-    # Check if we need to reconnect
-    if session.should_reconnect:
-        await state.send("session.reconnecting", {"timeRemaining": session.time_remaining})
-        session = await gemini_service.reconnect_session(state.session_id)
-        if not session:
-            await state.send_error("reconnect_failed", "Failed to reconnect session")
-            return
-        await state.send("session.reconnected", {})
-
     try:
-        # Send frame - this is fire-and-forget for video streaming
+        session = gemini_service.get_session(state.session_id)
+        if not session:
+            logger.info(f"Creating Gemini session for video: {state.session_id}")
+            session = await gemini_service.create_session(state.session_id, state.mode)
+
+        # Check if we need to reconnect
+        if session.should_reconnect:
+            await state.send("session.reconnecting", {"timeRemaining": session.time_remaining})
+            session = await gemini_service.reconnect_session(state.session_id)
+            if not session:
+                await state.send_error("reconnect_failed", "Failed to reconnect session")
+                return
+            await state.send("session.reconnected", {})
+
+        # Send frame - fire-and-forget for video streaming
         # Responses come through the audio/text receive loop
-        async for _ in session.send_video_frame(frame_data, mime_type):
-            pass  # Video frames don't yield responses directly
+        await session.send_video_frame(frame_data, mime_type)
     except Exception as e:
-        logger.error(f"Vision error: {e}")
-        await state.send_error("vision_error", str(e))
+        error_msg = str(e) if str(e) else "Unknown vision error"
+        logger.error(f"Vision error for {state.session_id}: {error_msg}", exc_info=True)
+        await state.send_error("vision_error", error_msg[:500])
 
 
 async def handle_photo_capture(state: ConnectionState, payload: dict[str, Any]) -> None:

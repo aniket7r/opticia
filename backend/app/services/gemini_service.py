@@ -152,41 +152,63 @@ class GeminiSession:
         if not self._session or not self._is_active:
             raise RuntimeError("Session not active")
 
+        logger.info(f"Sending text to Gemini: {text[:50]}...")
+
         # Use send_client_content for text (per SDK docs)
         await self._session.send_client_content(
             turns=[types.Content(parts=[types.Part(text=text)])],
             turn_complete=True,
         )
 
-        async for response in self._session.receive():
-            if response.server_content:
-                # Extract text from response
-                if response.server_content.model_turn:
-                    for part in response.server_content.model_turn.parts:
-                        if part.text:
-                            yield {
-                                "type": "text",
-                                "content": part.text,
-                                "complete": response.server_content.turn_complete,
-                            }
+        received_response = False
+        try:
+            async for response in self._session.receive():
+                logger.debug(f"Received response: {type(response)}")
 
-            # Handle tool calls
-            if response.tool_call:
-                self.tool_call_count += 1
-                for fc in response.tool_call.function_calls:
-                    yield {
-                        "type": "tool_call",
-                        "name": fc.name,
-                        "args": dict(fc.args) if fc.args else {},
-                    }
+                if response.server_content:
+                    # Extract text from response
+                    if response.server_content.model_turn:
+                        for part in response.server_content.model_turn.parts:
+                            if part.text:
+                                received_response = True
+                                yield {
+                                    "type": "text",
+                                    "content": part.text,
+                                    "complete": response.server_content.turn_complete,
+                                }
+                            # Handle audio response (for native audio model)
+                            if hasattr(part, 'inline_data') and part.inline_data:
+                                received_response = True
+                                yield {
+                                    "type": "audio",
+                                    "data": base64.b64encode(part.inline_data.data).decode() if isinstance(part.inline_data.data, bytes) else part.inline_data.data,
+                                    "sampleRate": AUDIO_OUTPUT_SAMPLE_RATE,
+                                }
 
-                # Attention recitation every 5 tool calls (Manus pattern)
-                if self.tool_call_count % 5 == 0:
-                    await self._recite_attention()
+                # Handle tool calls
+                if response.tool_call:
+                    received_response = True
+                    self.tool_call_count += 1
+                    for fc in response.tool_call.function_calls:
+                        yield {
+                            "type": "tool_call",
+                            "name": fc.name,
+                            "args": dict(fc.args) if fc.args else {},
+                        }
 
-            # Check if turn is complete
-            if response.server_content and response.server_content.turn_complete:
-                break
+                    # Attention recitation every 5 tool calls (Manus pattern)
+                    if self.tool_call_count % 5 == 0:
+                        await self._recite_attention()
+
+                # Check if turn is complete
+                if response.server_content and response.server_content.turn_complete:
+                    break
+        except Exception as e:
+            logger.error(f"Error receiving from Gemini: {e}", exc_info=True)
+            raise
+
+        if not received_response:
+            logger.warning("No response received from Gemini")
 
         # Append to context history (append-only for cache)
         self.context_history.append({"role": "user", "content": text})
@@ -230,10 +252,11 @@ class GeminiSession:
         self,
         frame_b64: str,
         mime_type: str = "image/jpeg",
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    ) -> None:
         """Send video frame using send_realtime_input.
 
         Note: Video is processed at 1 FPS by Gemini.
+        This is fire-and-forget - responses come through audio/text flow.
         """
         if not self._session or not self._is_active:
             raise RuntimeError("Session not active")
@@ -248,10 +271,8 @@ class GeminiSession:
                 data=frame_b64,
             )
         )
-
-        # Video frames typically don't get immediate responses
+        # Video frames don't get immediate responses
         # AI responds based on accumulated visual context
-        # Yield nothing here - responses come through audio/text flow
 
     async def send_image(
         self,
