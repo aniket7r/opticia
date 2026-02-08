@@ -65,6 +65,8 @@ async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
             turn_text_buffer.clear()
             if "[SEARCH:" in full_text.upper():
                 await _handle_search_in_text(session, state, full_text)
+            # Notify frontend that the AI turn is complete
+            await state.send("ai.turn_complete", {})
         elif chunk_type == "audio":
             await state.send("ai.audio", {
                 "data": chunk["data"],

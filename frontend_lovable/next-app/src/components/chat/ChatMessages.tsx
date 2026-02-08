@@ -11,20 +11,6 @@ type ChatItem =
   | { kind: "message"; message: Message }
   | { kind: "thinking"; id: string; steps: ThinkingStepData[]; isComplete: boolean; defaultCollapsed?: boolean };
 
-const thinkingItems: ChatItem[] = [
-  {
-    kind: "thinking",
-    id: "t1",
-    isComplete: true,
-    defaultCollapsed: true,
-    steps: [
-      { icon: "🔍", text: "Analyzing your plumbing...", status: "complete" },
-      { icon: "📖", text: "Identifying leak source...", status: "complete" },
-      { icon: "🔎", text: "Searching for repair guides...", status: "complete" },
-      { icon: "💡", text: "Found a solution!", status: "complete" },
-    ],
-  },
-];
 
 function AiHeader({ timestamp }: { timestamp?: Date }) {
   return (
@@ -72,9 +58,11 @@ function EmptyState() {
 interface ChatMessagesProps {
   compact?: boolean;
   messages?: Message[];
+  thinkingSteps?: ThinkingStepData[];
+  isThinking?: boolean;
 }
 
-export function ChatMessages({ compact = false, messages = [] }: ChatMessagesProps) {
+export function ChatMessages({ compact = false, messages = [], thinkingSteps = [], isThinking = false }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollDown, setShowScrollDown] = useState(false);
@@ -115,11 +103,21 @@ export function ChatMessages({ compact = false, messages = [] }: ChatMessagesPro
     );
   }
 
-  // Interleave thinking after the second message (index 1)
+  // Insert thinking steps before the last AI message
   const items: ChatItem[] = [];
+  const lastAiIndex = realMessages.reduce(
+    (last: number, m, i) => (m.role === "ai" ? i : last), -1
+  );
+
   realMessages.forEach((msg, i) => {
-    if (i === 1 && !compact) {
-      items.push(...thinkingItems);
+    if (thinkingSteps.length > 0 && i === lastAiIndex && !compact) {
+      items.push({
+        kind: "thinking",
+        id: "thinking-live",
+        steps: thinkingSteps,
+        isComplete: !isThinking,
+        defaultCollapsed: !isThinking,
+      });
     }
     items.push({ kind: "message", message: msg });
   });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ChevronDown, ChevronUp, Sparkles, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ThinkingStep, type ThinkingStepData } from "./ThinkingStep";
@@ -14,6 +14,13 @@ export interface ThinkingDisplayProps {
 export function ThinkingDisplay({ steps, isComplete, defaultCollapsed = false }: ThinkingDisplayProps) {
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
   const completedCount = steps.filter((s) => s.status === "complete").length;
+
+  // Auto-collapse when thinking completes
+  useEffect(() => {
+    if (isComplete) {
+      setIsCollapsed(true);
+    }
+  }, [isComplete]);
 
   if (isCollapsed) {
     return (

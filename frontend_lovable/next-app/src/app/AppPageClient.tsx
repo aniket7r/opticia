@@ -419,6 +419,8 @@ const AppPageClient = () => {
                         ...m,
                         type: m.type || "text",
                       }))}
+                      thinkingSteps={thinkingSteps}
+                      isThinking={isThinking}
                     />
                   </div>
 

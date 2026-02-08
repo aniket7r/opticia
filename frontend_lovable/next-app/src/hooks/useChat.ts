@@ -48,7 +48,8 @@ export function useChat(options: UseChatOptions = {}) {
 
   const audioProcessorRef = useRef<AudioProcessor | null>(null);
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
-  const currentAiMessageRef = useRef<string | null>(null);
+  const isAiStreamingRef = useRef(false);
+  const aiTextBufferRef = useRef("");
   const videoIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Initialize audio player
@@ -63,6 +64,35 @@ export function useChat(options: UseChatOptions = {}) {
   useEffect(() => {
     const unsubscribeText = subscribe("ai.text", (msg: WSMessage) => {
       const { content, complete } = msg.payload as { content: string; complete?: boolean };
+
+      // Track AI streaming state for thinking steps
+      if (!isAiStreamingRef.current) {
+        isAiStreamingRef.current = true;
+        aiTextBufferRef.current = "";
+        setThinkingSteps([]);
+        setIsThinking(true);
+      }
+
+      aiTextBufferRef.current += content;
+
+      // Parse bold headers (on their own line, optionally as markdown headings) as thinking steps
+      const headerPattern = /(?:^|\n)\s*(?:#{1,6}\s+)?\*\*([^*\n]+)\*\*/g;
+      const headers: string[] = [];
+      let match;
+      while ((match = headerPattern.exec(aiTextBufferRef.current)) !== null) {
+        headers.push(match[1].trim());
+      }
+
+      if (headers.length > 0) {
+        const icons = ["🔍", "💭", "🔎", "💡", "📝", "✨"];
+        setThinkingSteps(
+          headers.map((text, i) => ({
+            icon: icons[i % icons.length],
+            text,
+            status: (complete || i < headers.length - 1) ? "complete" as const : "active" as const,
+          }))
+        );
+      }
 
       setMessages((prev) => {
         // Finalize any streaming user transcription before adding AI text
@@ -94,6 +124,7 @@ export function useChat(options: UseChatOptions = {}) {
       });
 
       if (complete) {
+        isAiStreamingRef.current = false;
         setIsLoading(false);
         setIsThinking(false);
       }
@@ -148,6 +179,24 @@ export function useChat(options: UseChatOptions = {}) {
       ]);
     });
 
+    const unsubscribeTurnComplete = subscribe("ai.turn_complete", () => {
+      isAiStreamingRef.current = false;
+      setIsLoading(false);
+      setIsThinking(false);
+      // Mark all thinking steps as complete
+      setThinkingSteps((prev) =>
+        prev.map((s) => ({ ...s, status: "complete" as const }))
+      );
+      // Finalize any streaming AI message
+      setMessages((prev) =>
+        prev.map((m, i) =>
+          i === prev.length - 1 && m.role === "ai" && m.isStreaming
+            ? { ...m, isStreaming: false }
+            : m
+        )
+      );
+    });
+
     const unsubscribeError = subscribe("error", (msg: WSMessage) => {
       const error = msg.payload as { code: string; message: string };
       options.onError?.(error);
@@ -165,6 +214,7 @@ export function useChat(options: UseChatOptions = {}) {
       unsubscribeAudio();
       unsubscribeUserTranscription();
       unsubscribeToolCall();
+      unsubscribeTurnComplete();
       unsubscribeError();
       unsubscribeReset();
     };
@@ -184,6 +234,9 @@ export function useChat(options: UseChatOptions = {}) {
       };
       setMessages((prev) => [...prev, userMessage]);
       setIsLoading(true);
+      setThinkingSteps([]);
+      setIsThinking(false);
+      isAiStreamingRef.current = false;
 
       // Send attachments as photos if present
       if (attachments?.length) {
