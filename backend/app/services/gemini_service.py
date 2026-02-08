@@ -30,10 +30,10 @@ AUDIO_INPUT_SAMPLE_RATE = 16000
 AUDIO_OUTPUT_SAMPLE_RATE = 24000
 
 # Model for Live API
-# For Gemini Live API, use models with live/realtime support
-# Options: "gemini-2.0-flash-exp", "models/gemini-2.0-flash-exp"
+# Only specific models support bidiGenerateContent for real-time streaming
+# gemini-2.0-flash-live-001 is designed for the Live API WebSocket streaming
 # See: https://ai.google.dev/gemini-api/docs/models
-LIVE_API_MODEL = settings.gemini_model if hasattr(settings, 'gemini_model') and settings.gemini_model else "models/gemini-2.0-flash-exp"
+LIVE_API_MODEL = settings.gemini_model if hasattr(settings, 'gemini_model') and settings.gemini_model else "models/gemini-2.0-flash-live-001"
 
 
 class GeminiSession:
