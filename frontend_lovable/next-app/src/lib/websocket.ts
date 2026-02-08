@@ -121,13 +121,19 @@ export class WebSocketClient {
       return;
     }
 
+    if (this.ws?.readyState === WebSocket.CONNECTING) {
+      console.log("[WS] Already connecting, skipping");
+      return;
+    }
+
     this.setState("connecting");
+    console.log("[WS] Connecting to:", this.config.url);
 
     try {
       this.ws = new WebSocket(this.config.url);
       this.setupEventHandlers();
     } catch (error) {
-      console.error("[WS] Connection error:", error);
+      console.error("[WS] Failed to create WebSocket:", error);
       this.handleReconnect();
     }
   }
@@ -151,19 +157,23 @@ export class WebSocketClient {
     };
 
     this.ws.onclose = (event) => {
-      console.log("[WS] Disconnected:", event.code, event.reason);
+      console.log("[WS] Disconnected:", event.code, event.reason || "(no reason)");
       this.cleanup();
 
-      if (event.code !== 1000) {
-        // Abnormal close, attempt reconnect
+      // Code 1000 = normal closure, 1001 = going away (page unload)
+      // Code 1006 = abnormal closure (connection lost without close frame)
+      if (event.code !== 1000 && event.code !== 1001) {
+        console.log("[WS] Abnormal close, will attempt reconnect");
         this.handleReconnect();
       } else {
         this.setState("disconnected");
       }
     };
 
-    this.ws.onerror = (error) => {
-      console.error("[WS] Error:", error);
+    this.ws.onerror = (event) => {
+      // WebSocket errors don't contain useful info in the event
+      // The actual error details come through onclose
+      console.warn("[WS] Connection error occurred");
     };
   }
 
@@ -180,7 +190,12 @@ export class WebSocketClient {
 
     // Handle errors
     if (message.type === "error") {
-      const error = message.payload as WSError;
+      const payload = message.payload || {};
+      const error: WSError = {
+        code: (payload as any).code || "unknown_error",
+        message: (payload as any).message || "An error occurred",
+        recoverable: (payload as any).recoverable ?? true,
+      };
       this.config.onError(error);
     }
 

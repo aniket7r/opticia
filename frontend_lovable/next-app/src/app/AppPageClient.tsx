@@ -61,30 +61,46 @@ const AppPageClient = () => {
     },
   });
 
-  // Local state
-  const [showOnboarding, setShowOnboarding] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return !localStorage.getItem(ONBOARDING_KEY);
-  });
+  // Local state - initialize as false, check localStorage in useEffect to avoid hydration mismatch
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  // Check onboarding status after hydration
+  useEffect(() => {
+    const hasOnboarded = localStorage.getItem(ONBOARDING_KEY);
+    if (!hasOnboarded) {
+      setShowOnboarding(true);
+    }
+    setIsHydrated(true);
+  }, []);
 
   const [taskSteps, setTaskSteps] = useState(emptyTask.steps);
   const [taskTitle, setTaskTitle] = useState("");
 
-  const [sidebarOpen, setSidebarOpen] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return window.innerWidth >= 768;
-  });
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // Set sidebar state based on screen width after hydration
+  useEffect(() => {
+    setSidebarOpen(window.innerWidth >= 768);
+  }, []);
 
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [speakerOn, setSpeakerOn] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
 
-  // Load chats from localStorage
-  const [chats, setChats] = useState<ChatSummary[]>(() => {
-    if (typeof window === "undefined") return [];
+  // Load chats from localStorage after hydration
+  const [chats, setChats] = useState<ChatSummary[]>([]);
+
+  useEffect(() => {
     const saved = localStorage.getItem(CHATS_KEY);
-    return saved ? JSON.parse(saved) : [];
-  });
+    if (saved) {
+      try {
+        setChats(JSON.parse(saved));
+      } catch {
+        // Invalid JSON, ignore
+      }
+    }
+  }, []);
 
   // Save chats to localStorage
   useEffect(() => {
@@ -252,6 +268,15 @@ const AppPageClient = () => {
     },
     [clearChat]
   );
+
+  // Show loading state until hydrated
+  if (!isHydrated) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      </div>
+    );
+  }
 
   // Show onboarding overlay
   if (showOnboarding) {

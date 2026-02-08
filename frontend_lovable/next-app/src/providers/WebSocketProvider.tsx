@@ -55,8 +55,11 @@ export function WebSocketProvider({
   const [error, setError] = useState<WSError | null>(null);
   const clientRef = useRef<WebSocketClient | null>(null);
 
-  // Initialize WebSocket client
+  // Initialize WebSocket client (only on client side)
   useEffect(() => {
+    // Skip on server side
+    if (typeof window === "undefined") return;
+
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/session";
 
     clientRef.current = new WebSocketClient({
@@ -69,7 +72,7 @@ export function WebSocketProvider({
       },
       onError: (err) => {
         setError(err);
-        console.error("[WebSocket] Error:", err);
+        console.warn("[WebSocket] Error:", err);
       },
       onMessage: (message) => {
         // Handle session ID updates
