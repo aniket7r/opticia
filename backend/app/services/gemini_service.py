@@ -29,11 +29,13 @@ RECONNECT_BUFFER_SECONDS = 15  # Reconnect before timeout
 AUDIO_INPUT_SAMPLE_RATE = 16000
 AUDIO_OUTPUT_SAMPLE_RATE = 24000
 
-# Model for Live API
-# Only gemini-2.5-flash-native-audio supports bidiGenerateContent (Live API)
-# Gemini 3 models do NOT support Live API yet (as of Feb 2026)
-# See: https://ai.google.dev/gemini-api/docs/models
-LIVE_API_MODEL = settings.gemini_model if hasattr(settings, 'gemini_model') and settings.gemini_model else "models/gemini-2.5-flash-native-audio-preview-12-2025"
+# Models for Live API - different models for text vs audio responses
+# See: https://ai.google.dev/gemini-api/docs/live-guide
+# - TEXT mode: gemini-live-2.5-flash-preview (supports text responses)
+# - AUDIO mode: gemini-2.5-flash-native-audio-preview-12-2025 (supports audio responses)
+# Note: Gemini 3 models do NOT support Live API yet (as of Feb 2026)
+LIVE_API_MODEL_TEXT = "models/gemini-live-2.5-flash-preview"
+LIVE_API_MODEL_AUDIO = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 
 
 class GeminiSession:
@@ -104,11 +106,18 @@ class GeminiSession:
         if not settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
 
-        logger.info(f"Starting Gemini session with model: {LIVE_API_MODEL}")
-        self._client = genai.Client(api_key=settings.gemini_api_key)
+        # Select model based on mode
+        # TEXT mode needs gemini-live-2.5-flash-preview
+        # AUDIO mode needs gemini-2.5-flash-native-audio-preview
+        if self.mode == "voice":
+            model = LIVE_API_MODEL_AUDIO
+            response_modality = "AUDIO"
+        else:
+            model = LIVE_API_MODEL_TEXT
+            response_modality = "TEXT"
 
-        # Per docs: Can only set ONE response modality per session
-        response_modality = "AUDIO" if self.mode == "voice" else "TEXT"
+        logger.info(f"Starting Gemini session with model: {model}, mode: {self.mode}")
+        self._client = genai.Client(api_key=settings.gemini_api_key)
 
         # Build tool definitions for Gemini
         tool_definitions = tool_registry.get_definitions()
@@ -136,7 +145,7 @@ class GeminiSession:
         # Connect and enter session context
         try:
             self._session = await self._client.aio.live.connect(
-                model=LIVE_API_MODEL,
+                model=model,
                 config=config,
             ).__aenter__()
         except Exception as e:
@@ -145,7 +154,7 @@ class GeminiSession:
 
         self.started_at = datetime.now(timezone.utc)
         self._is_active = True
-        logger.info(f"Gemini session started: {self.session_id}, mode={self.mode}, model={LIVE_API_MODEL}")
+        logger.info(f"Gemini session started: {self.session_id}, mode={self.mode}, model={model}")
 
     async def send_text(self, text: str) -> AsyncGenerator[dict[str, Any], None]:
         """Send text using send_client_content (deterministic ordering)."""
