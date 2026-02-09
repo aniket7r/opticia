@@ -63,6 +63,7 @@ class GeminiSession:
         self.started_at: datetime | None = None
         self.context_history: list[dict[str, Any]] = []
         self.active_task: dict[str, Any] | None = None  # {title, steps, current_step}
+        self.denied_report_topics: set[str] = set()  # Topics user declined reports for
         self.tool_call_count = 0
         self.running_summary = ""
         self._client: genai.Client | None = None
@@ -650,6 +651,7 @@ class GeminiService:
                     content = re.sub(r'\[SEARCH:[^]]*\]', '', content)
                     content = re.sub(r'\[TASK_UPDATE:[^]]*\]', '', content)
                     content = re.sub(r'\[TASK_COMPLETE\]', '', content, flags=re.IGNORECASE)
+                    content = re.sub(r'\[REPORT:[^]]*\]', '', content, flags=re.IGNORECASE)
                     content = content.strip()
                 # Strip system messages from context
                 if role == "user" and content.startswith("[SYSTEM]"):

@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { FloatingPiP } from "@/components/chat/FloatingPiP";
 import { LargePreview } from "@/components/chat/LargePreview";
 import { TaskProgressCard } from "@/components/task/TaskProgressCard";
+import { ReportPanel } from "@/components/report/ReportPanel";
 
 import { CameraPreview } from "@/components/chat/CameraPreview";
 import { ChatMessages } from "@/components/chat/ChatMessages";
@@ -66,6 +67,9 @@ const AppPageClient = () => {
     isTaskActive,
     handleToggleStep: chatHandleToggleStep,
     dismissTask,
+    reportData,
+    isReportActive,
+    dismissReport,
     send,
   } = useChat({
     onToolCall: (name, args) => {
@@ -415,68 +419,100 @@ const AppPageClient = () => {
             />
 
             <LargePreview>
-              <div className={cn(
-                "flex h-full",
-                isTaskActive && chatTaskSteps.length > 0
-                  ? "flex-col md:flex-row"
-                  : "flex-col"
-              )}>
-                {/* Main content — 60% when task active */}
-                <div className={cn(
-                  "flex flex-col overflow-hidden px-5",
-                  isTaskActive && chatTaskSteps.length > 0
-                    ? "h-[60%] md:h-full md:w-[60%] md:border-r md:border-border/40"
-                    : "h-full"
-                )}>
-                  <div className="max-w-3xl sm:min-w-[400px] mx-auto w-full flex flex-col flex-1 min-h-0">
-                    <div className="flex-1 min-h-0 overflow-hidden">
-                      <ChatMessages
-                        messages={messages.map((m) => ({
-                          ...m,
-                          type: m.type || "text",
-                        }))}
-                        thinkingSteps={thinkingSteps}
-                        isThinking={isThinking}
-                      />
+              {(() => {
+                const hasTask = isTaskActive && chatTaskSteps.length > 0;
+                const hasReport = isReportActive && reportData !== null;
+                const hasSidePanel = hasTask || hasReport;
+                // When both panels active, each gets 50% of the side panel
+                const bothActive = hasTask && hasReport;
+
+                return (
+                  <div className={cn(
+                    "flex h-full",
+                    hasSidePanel ? "flex-col md:flex-row" : "flex-col"
+                  )}>
+                    {/* Main content — 60% when side panel active */}
+                    <div className={cn(
+                      "flex flex-col overflow-hidden px-5",
+                      hasSidePanel
+                        ? "h-[60%] md:h-full md:w-[60%] md:border-r md:border-border/40"
+                        : "h-full"
+                    )}>
+                      <div className="max-w-3xl sm:min-w-[400px] mx-auto w-full flex flex-col flex-1 min-h-0">
+                        <div className="flex-1 min-h-0 overflow-hidden">
+                          <ChatMessages
+                            messages={messages.map((m) => ({
+                              ...m,
+                              type: m.type || "text",
+                            }))}
+                            thinkingSteps={thinkingSteps}
+                            isThinking={isThinking}
+                          />
+                        </div>
+
+                        <BottomBar
+                          speakerOn={speakerOn}
+                          cameraOn={camera.active}
+                          onToggleSpeaker={handleToggleSpeaker}
+                          onToggleCamera={() => {
+                            if (camera.active) {
+                              camera.stopStream();
+                            } else {
+                              if (screenShare.active) {
+                                screenShare.stopScreenShare();
+                              }
+                              camera.startCamera();
+                            }
+                          }}
+                          onSendMessage={handleSendMessage}
+                          onCapturePhoto={handleCapturePhoto}
+                          onScreenShare={handleScreenShare}
+                          isScreenSharing={screenShare.active}
+                          isVoiceStreaming={isVoiceStreaming}
+                          onToggleVoice={handleToggleVoice}
+                        />
+                      </div>
                     </div>
 
-                    <BottomBar
-                      speakerOn={speakerOn}
-                      cameraOn={camera.active}
-                      onToggleSpeaker={handleToggleSpeaker}
-                      onToggleCamera={() => {
-                        if (camera.active) {
-                          camera.stopStream();
-                        } else {
-                          // Stop screen share before starting camera — single source
-                          if (screenShare.active) {
-                            screenShare.stopScreenShare();
-                          }
-                          camera.startCamera();
-                        }
-                      }}
-                      onSendMessage={handleSendMessage}
-                      onCapturePhoto={handleCapturePhoto}
-                      onScreenShare={handleScreenShare}
-                      isScreenSharing={screenShare.active}
-                      isVoiceStreaming={isVoiceStreaming}
-                      onToggleVoice={handleToggleVoice}
-                    />
-                  </div>
-                </div>
+                    {/* Side panels — 40% total, split 50/50 if both active */}
+                    {hasSidePanel && (
+                      <div className={cn(
+                        "flex flex-col overflow-hidden",
+                        "h-[40%] md:h-full md:w-[40%]",
+                        "animate-in slide-in-from-bottom md:slide-in-from-right duration-300"
+                      )}>
+                        {/* Task panel */}
+                        {hasTask && (
+                          <div className={cn(
+                            "overflow-y-auto p-4",
+                            bothActive ? "h-1/2 border-b border-border/40" : "h-full"
+                          )}>
+                            <TaskProgressCard
+                              steps={chatTaskSteps}
+                              title={chatTaskTitle}
+                              onToggleStep={chatHandleToggleStep}
+                              onDismiss={dismissTask}
+                            />
+                          </div>
+                        )}
 
-                {/* Task panel — 40% when active, slides in */}
-                {isTaskActive && chatTaskSteps.length > 0 && (
-                  <div className="h-[40%] md:h-full md:w-[40%] overflow-y-auto p-4 animate-in slide-in-from-bottom md:slide-in-from-right duration-300">
-                    <TaskProgressCard
-                      steps={chatTaskSteps}
-                      title={chatTaskTitle}
-                      onToggleStep={chatHandleToggleStep}
-                      onDismiss={dismissTask}
-                    />
+                        {/* Report panel */}
+                        {hasReport && (
+                          <div className={cn(
+                            "overflow-hidden",
+                            bothActive ? "h-1/2" : "h-full"
+                          )}>
+                            <ReportPanel
+                              report={reportData}
+                              onDismiss={dismissReport}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
             </LargePreview>
           </div>
         </div>

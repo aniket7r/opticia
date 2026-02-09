@@ -55,6 +55,11 @@ export type MessageType =
   | "task.step_update"
   | "task.step_done"
   | "task.complete"
+  // Report
+  | "report.generating"
+  | "report.ready"
+  | "report.error"
+  | "report.decline"
   // Conversation
   | "conversation.new"
   | "conversation.reset"

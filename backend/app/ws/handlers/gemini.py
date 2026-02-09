@@ -25,6 +25,9 @@ TASK_PATTERN = re.compile(r'\[TASK:\s*(\{.+?\})\]', re.IGNORECASE | re.DOTALL)
 TASK_UPDATE_PATTERN = re.compile(r'\[TASK_UPDATE:\s*(\{.+?\})\]', re.IGNORECASE)
 TASK_COMPLETE_PATTERN = re.compile(r'\[TASK_COMPLETE\]', re.IGNORECASE)
 
+# Pattern to detect report generation requests
+REPORT_PATTERN = re.compile(r'\[REPORT:\s*(.+?)\]', re.IGNORECASE)
+
 
 async def _handle_search_in_text(session: Any, state: ConnectionState, text: str) -> None:
     """Detect [SEARCH: query] in AI text, execute search, and feed results back."""
@@ -211,6 +214,57 @@ async def _handle_task_in_text(session: Any, state: ConnectionState, text: str) 
         logger.info("Task completed")
 
 
+async def _handle_report_in_text(session: Any, state: ConnectionState, text: str) -> None:
+    """Detect [REPORT: topic] in AI text and spawn async report generation."""
+    from app.services.report_service import generate_report
+
+    match = REPORT_PATTERN.search(text)
+    if not match:
+        return
+
+    topic = match.group(1).strip()
+    if not topic:
+        return
+
+    # Check if this topic was already denied
+    denied = getattr(session, "denied_report_topics", set())
+    for denied_topic in denied:
+        if denied_topic.lower() in topic.lower():
+            logger.info(f"Report topic '{topic}' was previously denied, skipping")
+            return
+
+    import uuid
+    report_id = str(uuid.uuid4())
+    logger.info(f"Report requested: '{topic}' (report_id={report_id})")
+
+    # Emit generating event to frontend
+    await state.send("report.generating", {
+        "reportId": report_id,
+        "topic": topic,
+        "estimatedSeconds": 15,
+    })
+
+    # Spawn background task for report generation (don't block live session)
+    async def _generate_and_send():
+        try:
+            result = await generate_report(
+                topic=topic,
+                context_history=list(session.context_history),
+                session_id=state.session_id,
+            )
+            await state.send("report.ready", result)
+            logger.info(f"Report delivered: {report_id}")
+        except Exception as e:
+            logger.error(f"Report generation failed: {e}", exc_info=True)
+            await state.send("report.error", {
+                "reportId": report_id,
+                "error": str(e)[:200],
+                "retryable": True,
+            })
+
+    asyncio.create_task(_generate_and_send())
+
+
 async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
     """Ensure background receive loop is running for this session.
 
@@ -254,9 +308,12 @@ async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
         if "[SEARCH:" in full_text.upper():
             await _handle_search_in_text(session, state, full_text)
         has_task = "[TASK" in full_text.upper()
-        logger.info(f"Buffer processed: {len(full_text)} chars, has_task={has_task}")
+        has_report = "[REPORT:" in full_text.upper()
+        logger.info(f"Buffer processed: {len(full_text)} chars, has_task={has_task}, has_report={has_report}")
         if has_task:
             await _handle_task_in_text(session, state, full_text)
+        if has_report:
+            await _handle_report_in_text(session, state, full_text)
         await state.send("ai.turn_complete", {})
 
     async def _delayed_process(delay: float = 2.0) -> None:
@@ -295,7 +352,7 @@ async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
             pending_process[0] = asyncio.create_task(_delayed_process(2.0))
         elif chunk_type == "turn_complete":
             full_text = "".join(turn_text_buffer)
-            has_patterns = "[TASK" in full_text.upper() or "[SEARCH:" in full_text.upper()
+            has_patterns = "[TASK" in full_text.upper() or "[SEARCH:" in full_text.upper() or "[REPORT:" in full_text.upper()
 
             if has_patterns:
                 # Patterns already in buffer from part.text — process now
@@ -463,6 +520,24 @@ async def handle_task_decline(state: ConnectionState, payload: dict[str, Any]) -
             "[SYSTEM] User declined step-by-step guidance. "
             "Just explain the topic conversationally instead, without task steps."
         )
+
+
+async def handle_report_decline(state: ConnectionState, payload: dict[str, Any]) -> None:
+    """User declined a report suggestion — track the topic to avoid nagging."""
+    topic = payload.get("topic", "")
+    logger.info(f"Report declined for topic: {topic}")
+    session = gemini_service.get_session(state.session_id)
+    if session and topic:
+        session.denied_report_topics.add(topic.lower())
+
+
+async def handle_report_decline(state: ConnectionState, payload: dict[str, Any]) -> None:
+    """User declined a report suggestion — track topic to prevent nagging."""
+    topic = payload.get("topic", "")
+    logger.info(f"Report declined for topic: {topic}")
+    session = gemini_service.get_session(state.session_id)
+    if session and topic:
+        session.denied_report_topics.add(topic.lower())
 
 
 async def handle_task_step_done(state: ConnectionState, payload: dict[str, Any]) -> None:

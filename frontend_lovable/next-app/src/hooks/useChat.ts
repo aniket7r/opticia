@@ -6,6 +6,16 @@ import { WSMessage } from "@/lib/websocket";
 import { AudioProcessor, AudioPlayer } from "@/lib/audio";
 import type { Step } from "@/components/task/types";
 
+export interface ReportData {
+  reportId: string;
+  topic: string;
+  markdownContent?: string;
+  htmlContent?: string;
+  status: "generating" | "ready" | "error";
+  error?: string;
+  estimatedSeconds?: number;
+}
+
 export interface Message {
   id: string;
   role: "user" | "ai" | "system";
@@ -49,6 +59,8 @@ export function useChat(options: UseChatOptions = {}) {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskSteps, setTaskSteps] = useState<Step[]>([]);
   const [isTaskActive, setIsTaskActive] = useState(false);
+  const [reportData, setReportData] = useState<ReportData | null>(null);
+  const [isReportActive, setIsReportActive] = useState(false);
 
   const audioProcessorRef = useRef<AudioProcessor | null>(null);
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
@@ -69,11 +81,12 @@ export function useChat(options: UseChatOptions = {}) {
     const unsubscribeText = subscribe("ai.text", (msg: WSMessage) => {
       let { content, complete } = msg.payload as { content: string; complete?: boolean };
 
-      // Strip task control patterns from displayed text
+      // Strip task/report control patterns from displayed text
       content = content
         .replace(/\[TASK:\s*\{[^}]*\}\]/gi, "")
         .replace(/\[TASK_UPDATE:\s*\{.*?\}\]/gi, "")
-        .replace(/\[TASK_COMPLETE\]/gi, "");
+        .replace(/\[TASK_COMPLETE\]/gi, "")
+        .replace(/\[REPORT:\s*[^\]]*\]/gi, "");
 
       // Skip empty content after stripping
       if (!content && !complete) return;
@@ -229,6 +242,7 @@ export function useChat(options: UseChatOptions = {}) {
             cleaned = cleaned
               .replace(/\[TASK_UPDATE:\s*\{[^}]*\}\]/gi, "")
               .replace(/\[TASK_COMPLETE\]/gi, "")
+              .replace(/\[REPORT:\s*[^\]]*\]/gi, "")
               .trim();
             return { ...m, content: cleaned, isStreaming: false };
           }
@@ -275,6 +289,40 @@ export function useChat(options: UseChatOptions = {}) {
       }, 2000);
     });
 
+    // Report event subscriptions
+    const unsubscribeReportGenerating = subscribe("report.generating", (msg: WSMessage) => {
+      const { reportId, topic, estimatedSeconds } = msg.payload as {
+        reportId: string; topic: string; estimatedSeconds: number;
+      };
+      setReportData({
+        reportId,
+        topic,
+        status: "generating",
+        estimatedSeconds,
+      });
+      setIsReportActive(true);
+    });
+
+    const unsubscribeReportReady = subscribe("report.ready", (msg: WSMessage) => {
+      const { reportId, topic, markdownContent, htmlContent } = msg.payload as {
+        reportId: string; topic: string; markdownContent: string; htmlContent: string;
+      };
+      setReportData({
+        reportId,
+        topic,
+        markdownContent,
+        htmlContent,
+        status: "ready",
+      });
+    });
+
+    const unsubscribeReportError = subscribe("report.error", (msg: WSMessage) => {
+      const { reportId, error } = msg.payload as { reportId: string; error: string; retryable: boolean };
+      setReportData((prev) =>
+        prev ? { ...prev, status: "error", error } : null
+      );
+    });
+
     const unsubscribeReset = subscribe("conversation.reset", () => {
       setMessages([]);
       setThinkingSteps([]);
@@ -282,6 +330,8 @@ export function useChat(options: UseChatOptions = {}) {
       setTaskSteps([]);
       setTaskTitle("");
       setIsTaskActive(false);
+      setReportData(null);
+      setIsReportActive(false);
     });
 
     return () => {
@@ -294,6 +344,9 @@ export function useChat(options: UseChatOptions = {}) {
       unsubscribeTaskStart();
       unsubscribeTaskUpdate();
       unsubscribeTaskComplete();
+      unsubscribeReportGenerating();
+      unsubscribeReportReady();
+      unsubscribeReportError();
       unsubscribeReset();
     };
   }, [subscribe, options]);
@@ -441,6 +494,12 @@ export function useChat(options: UseChatOptions = {}) {
     setTaskTitle("");
   }, []);
 
+  // Dismiss report
+  const dismissReport = useCallback(() => {
+    setIsReportActive(false);
+    setReportData(null);
+  }, []);
+
   // Stop audio playback
   const stopAudioPlayback = useCallback(() => {
     audioPlayerRef.current?.stop();
@@ -458,6 +517,8 @@ export function useChat(options: UseChatOptions = {}) {
     taskTitle,
     taskSteps,
     isTaskActive,
+    reportData,
+    isReportActive,
 
     // Actions
     sendMessage,
@@ -470,6 +531,7 @@ export function useChat(options: UseChatOptions = {}) {
     stopAudioPlayback,
     handleToggleStep,
     dismissTask,
+    dismissReport,
 
     // Low-level access
     send,

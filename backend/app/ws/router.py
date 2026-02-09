@@ -9,6 +9,7 @@ from app.services.gemini_service import gemini_service
 from app.ws.connection import ConnectionState, manager
 from app.ws.handlers.gemini import (
     handle_audio_chunk,
+    handle_report_decline,
     handle_task_accept,
     handle_task_decline,
     handle_task_step_done,
@@ -72,6 +73,8 @@ MESSAGE_HANDLERS: dict[str, Any] = {
     "task.accept": handle_task_accept,
     "task.decline": handle_task_decline,
     "task.step_done": handle_task_step_done,
+    # Report
+    "report.decline": handle_report_decline,
     # Conversation
     "conversation.new": handle_conversation_new,
 }
