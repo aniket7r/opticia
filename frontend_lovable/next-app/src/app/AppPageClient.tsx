@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { FloatingPiP } from "@/components/chat/FloatingPiP";
 import { LargePreview } from "@/components/chat/LargePreview";
 import { TaskProgressCard } from "@/components/task/TaskProgressCard";
-import { TaskConfirmation } from "@/components/task/TaskConfirmation";
+
 import { CameraPreview } from "@/components/chat/CameraPreview";
 import { ChatMessages } from "@/components/chat/ChatMessages";
 import { ChatHeader } from "@/components/chat/ChatHeader";
@@ -64,10 +64,7 @@ const AppPageClient = () => {
     taskTitle: chatTaskTitle,
     taskSteps: chatTaskSteps,
     isTaskActive,
-    taskProposal,
     handleToggleStep: chatHandleToggleStep,
-    acceptTask,
-    declineTask,
     dismissTask,
     send,
   } = useChat({
@@ -136,7 +133,10 @@ const AppPageClient = () => {
         createdAt: new Date(),
         favorite: false,
       };
-      setChats((prev) => [newChat, ...prev]);
+      setChats((prev) => {
+        if (prev.some((c) => c.id === sessionId)) return prev;
+        return [newChat, ...prev];
+      });
       setCurrentChatId(sessionId);
     }
   }, [sessionId, currentChatId]);
@@ -499,14 +499,6 @@ const AppPageClient = () => {
           />
         </FloatingPiP>
 
-        {/* Task confirmation modal */}
-        <TaskConfirmation
-          open={!!taskProposal}
-          title={taskProposal?.title ?? ""}
-          steps={taskProposal?.steps ?? []}
-          onAccept={acceptTask}
-          onDecline={declineTask}
-        />
       </div>
     </div>
   );

@@ -48,6 +48,28 @@ async def _handle_search_in_text(session: Any, state: ConnectionState, text: str
     await session.send_text_message(f"[Search results]: {result_text}")
 
 
+def _sanitize_json(raw: str) -> str:
+    """Aggressively sanitize LLM/voice-transcribed JSON."""
+    # Replace smart/curly quotes with straight quotes
+    raw = raw.replace('\u201c', '"').replace('\u201d', '"')
+    raw = raw.replace('\u2018', "'").replace('\u2019', "'")
+    # Replace single quotes used as JSON delimiters with double quotes
+    # (common in voice transcription)
+    raw = re.sub(r"(?<=[\[{,:])\s*'", ' "', raw)
+    raw = re.sub(r"'\s*(?=[\]},:}])", '"', raw)
+    # Fix unquoted keys: {title: "..." } -> {"title": "..."}
+    raw = re.sub(r'(?<=[{,])\s*(\w+)\s*:', r' "\1":', raw)
+    # Remove double commas, trailing commas
+    raw = re.sub(r',\s*,', ',', raw)
+    raw = re.sub(r',\s*\]', ']', raw)
+    raw = re.sub(r',\s*\}', '}', raw)
+    # Remove newlines/tabs inside the JSON
+    raw = raw.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+    # Collapse multiple spaces
+    raw = re.sub(r' {2,}', ' ', raw)
+    return raw
+
+
 def _extract_json_from_tag(text: str, tag: str) -> str | None:
     """Extract JSON object from a [TAG: {...}] pattern using bracket counting."""
     idx = text.upper().find(f"[{tag.upper()}:")
@@ -66,22 +88,67 @@ def _extract_json_from_tag(text: str, tag: str) -> str | None:
             depth -= 1
             if depth == 0:
                 raw = text[brace_start:i + 1]
-                # Sanitize LLM-generated JSON
-                raw = re.sub(r',\s*,', ',', raw)
-                raw = re.sub(r',\s*\]', ']', raw)
-                raw = re.sub(r',\s*\}', '}', raw)
+                raw = _sanitize_json(raw)
+                logger.info(f"Extracted JSON from [{tag}]: {raw[:300]}")
                 return raw
     return None
 
 
-async def _handle_task_in_text(state: ConnectionState, text: str) -> None:
-    """Detect [TASK:], [TASK_UPDATE:], [TASK_COMPLETE] patterns in AI text."""
+def _parse_task_json_with_fallback(raw_json: str) -> dict | None:
+    """Try to parse task JSON, with aggressive fallbacks for voice transcription."""
+    # Attempt 1: strict JSON parse
+    try:
+        return json.loads(raw_json)
+    except json.JSONDecodeError as e:
+        logger.info(f"Strict JSON parse failed: {e}. Raw: {raw_json[:200]}")
+
+    # Attempt 2: fix common voice-transcription issues and retry
+    fixed = raw_json
+    # Voice might transcribe "steps" array items as plain strings without braces
+    # e.g., "steps": ["Step 1", "Step 2"] instead of [{"title": "Step 1"}]
+    try:
+        return json.loads(fixed)
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 3: regex-based extraction as last resort
+    logger.info("Falling back to regex-based task extraction")
+    try:
+        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', raw_json)
+        title = title_match.group(1) if title_match else "Task"
+
+        # Find all step titles - look for {"title": "..."} patterns
+        step_titles = re.findall(r'"title"\s*:\s*"([^"]+)"', raw_json)
+        # First match is the task title, rest are step titles
+        if step_titles and step_titles[0] == title:
+            step_titles = step_titles[1:]
+
+        if not step_titles:
+            # Try to find string array items: ["Step 1", "Step 2"]
+            step_titles = re.findall(r'(?<=[\[,])\s*"([^"]{3,})"', raw_json)
+            # Filter out the title and key names
+            step_titles = [s for s in step_titles if s != title and s not in ("title", "steps", "description")]
+
+        if step_titles:
+            return {"title": title, "steps": [{"title": s} for s in step_titles]}
+    except Exception as e:
+        logger.warning(f"Regex fallback also failed: {e}")
+
+    return None
+
+
+async def _handle_task_in_text(session: Any, state: ConnectionState, text: str) -> None:
+    """Detect [TASK:], [TASK_UPDATE:], [TASK_COMPLETE] patterns in AI text.
+
+    Updates both the frontend (via WebSocket) and the session's active_task
+    so context is preserved across reconnects.
+    """
 
     # Check for new task creation
     raw_json = _extract_json_from_tag(text, "TASK")
     if raw_json:
-        try:
-            task_json = json.loads(raw_json)
+        task_json = _parse_task_json_with_fallback(raw_json)
+        if task_json:
             title = task_json.get("title", "Task")
             raw_steps = task_json.get("steps", [])
 
@@ -95,36 +162,52 @@ async def _handle_task_in_text(state: ConnectionState, text: str) -> None:
                     "toggleable": True,
                 })
 
-            await state.send("task.propose", {
+            if not steps:
+                logger.warning(f"Task parsed but has no steps, skipping: {title}")
+                return
+
+            await state.send("task.start", {
                 "id": f"task-{state.session_id[:8]}",
                 "title": title,
                 "steps": steps,
                 "currentStep": 0,
             })
-            logger.info(f"Task proposed: {title} with {len(steps)} steps")
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning(f"Failed to parse task JSON: {e}")
+            # Track task state in session for context preservation
+            session.set_active_task(title, steps)
+            logger.info(f"Task started: {title} with {len(steps)} steps")
+        else:
+            logger.warning(f"Could not parse task JSON even with fallbacks: {raw_json[:200]}")
         return
 
     # Check for step update
-    update_match = TASK_UPDATE_PATTERN.search(text)
-    if update_match:
+    raw_update = _extract_json_from_tag(text, "TASK_UPDATE")
+    if raw_update:
+        step_index = None
+        status = "completed"
         try:
-            update_json = json.loads(update_match.group(1))
+            update_json = json.loads(raw_update)
             step_index = update_json.get("step", 0)
             status = update_json.get("status", "completed")
+        except json.JSONDecodeError:
+            # Regex fallback: extract step number
+            step_match = re.search(r'"?step"?\s*:\s*(\d+)', raw_update)
+            if step_match:
+                step_index = int(step_match.group(1))
+            logger.info(f"TASK_UPDATE JSON fallback, step={step_index}")
+        if step_index is not None:
             await state.send("task.step_update", {
                 "stepIndex": step_index,
                 "status": status,
             })
+            # Track step progress in session
+            session.update_task_step(step_index, status)
             logger.info(f"Task step {step_index} -> {status}")
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning(f"Failed to parse task update JSON: {e}")
         return
 
     # Check for task completion
     if TASK_COMPLETE_PATTERN.search(text):
         await state.send("task.complete", {})
+        session.clear_active_task()
         logger.info("Task completed")
 
 
@@ -137,20 +220,43 @@ async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
     In voice mode, output_transcription may arrive AFTER turn_complete.
     We use delayed processing: if the buffer has patterns at turn_complete,
     process immediately. Otherwise, wait up to 2s for late transcription.
+
+    IMPORTANT: If the receive loop is already running, return early to
+    avoid replacing the callback closure (which would wipe the buffers).
+    This is critical in voice mode where audio.chunk calls this frequently.
     """
+    # Don't replace callback if receive loop is already active
+    if session._receive_task and not session._receive_task.done():
+        return
+
     turn_text_buffer: list[str] = []
+    input_transcription_buffer: list[str] = []
     pending_process: list[asyncio.Task | None] = [None]
 
     async def _process_buffer() -> None:
         """Process accumulated text buffer for search/task patterns."""
         full_text = "".join(turn_text_buffer)
         turn_text_buffer.clear()
+
+        # Capture user voice transcription into context_history
+        user_transcript = "".join(input_transcription_buffer).strip()
+        input_transcription_buffer.clear()
+        if user_transcript:
+            session.context_history.append({"role": "user", "content": user_transcript})
+            # Update running summary with latest user topic
+            session.update_summary(user_transcript[:200])
+
+        # Capture AI response into context_history
+        if full_text.strip():
+            session.context_history.append({"role": "ai", "content": full_text.strip()})
+            session._trim_context_history()
+
         if "[SEARCH:" in full_text.upper():
             await _handle_search_in_text(session, state, full_text)
         has_task = "[TASK" in full_text.upper()
         logger.info(f"Buffer processed: {len(full_text)} chars, has_task={has_task}")
         if has_task:
-            await _handle_task_in_text(state, full_text)
+            await _handle_task_in_text(session, state, full_text)
         await state.send("ai.turn_complete", {})
 
     async def _delayed_process(delay: float = 2.0) -> None:
@@ -170,10 +276,23 @@ async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
                 "content": content,
                 "complete": chunk.get("complete", False),
             })
-            # If post-turn-complete text arrives, reset the delay timer
+            # Always start/reset delay timer when text arrives
             if pending_process[0] and not pending_process[0].done():
                 pending_process[0].cancel()
-                pending_process[0] = asyncio.create_task(_delayed_process(1.5))
+            pending_process[0] = asyncio.create_task(_delayed_process(1.5))
+        elif chunk_type == "output_transcription":
+            # AI speech transcribed to text — arrives AFTER turn_complete in voice mode
+            content = chunk["content"]
+            turn_text_buffer.append(content)
+            logger.info(f"Output transcription buffered: '{content[:60]}...'")
+            await state.send("ai.text", {
+                "content": content,
+                "complete": chunk.get("complete", False),
+            })
+            # Always start/reset delay timer — even if no prior timer exists
+            if pending_process[0] and not pending_process[0].done():
+                pending_process[0].cancel()
+            pending_process[0] = asyncio.create_task(_delayed_process(2.0))
         elif chunk_type == "turn_complete":
             full_text = "".join(turn_text_buffer)
             has_patterns = "[TASK" in full_text.upper() or "[SEARCH:" in full_text.upper()
@@ -182,17 +301,18 @@ async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
                 # Patterns already in buffer from part.text — process now
                 await _process_buffer()
             else:
-                # No patterns yet — wait for output_transcription
+                # No patterns yet — wait for output_transcription (can be 3-5s late)
                 logger.info(f"Turn complete: {len(full_text)} chars, delaying for transcription")
                 if pending_process[0] and not pending_process[0].done():
                     pending_process[0].cancel()
-                pending_process[0] = asyncio.create_task(_delayed_process(2.0))
+                pending_process[0] = asyncio.create_task(_delayed_process(5.0))
         elif chunk_type == "audio":
             await state.send("ai.audio", {
                 "data": chunk["data"],
                 "sampleRate": chunk.get("sampleRate", 24000),
             })
         elif chunk_type == "input_transcription":
+            input_transcription_buffer.append(chunk["content"])
             await state.send("user.transcription", {
                 "content": chunk["content"],
             })
@@ -219,15 +339,39 @@ async def _get_or_create_session(state: ConnectionState, mode: str | None = None
 
     # Check if we need to reconnect
     if session.should_reconnect:
-        await state.send("session.reconnecting", {"timeRemaining": session.time_remaining})
-        session = await gemini_service.reconnect_session(state.session_id)
+        session = await _do_reconnect(state)
         if not session:
-            await state.send_error("reconnect_failed", "Failed to reconnect session")
             return None
-        await state.send("session.reconnected", {})
 
     # Ensure receive loop is running
     await _ensure_receive_loop(state, session)
+
+    # Start proactive reconnect timer (fires even without user messages)
+    if not session._reconnect_timer or session._reconnect_timer.done():
+        async def _proactive_reconnect() -> None:
+            await _do_reconnect(state)
+
+        session.start_reconnect_timer(_proactive_reconnect)
+
+    return session
+
+
+async def _do_reconnect(state: ConnectionState):
+    """Execute session reconnect and set up the new session."""
+    await state.send("session.reconnecting", {"timeRemaining": 0})
+    session = await gemini_service.reconnect_session(state.session_id)
+    if not session:
+        await state.send_error("reconnect_failed", "Failed to reconnect session")
+        return None
+    await state.send("session.reconnected", {})
+    # Ensure receive loop on the new session
+    await _ensure_receive_loop(state, session)
+
+    # Start reconnect timer for the new session too
+    async def _proactive_reconnect() -> None:
+        await _do_reconnect(state)
+
+    session.start_reconnect_timer(_proactive_reconnect)
     return session
 
 
@@ -327,6 +471,8 @@ async def handle_task_step_done(state: ConnectionState, payload: dict[str, Any])
     logger.info(f"User marked step {step_index} as done")
     session = gemini_service.get_session(state.session_id)
     if session:
+        # Track step progress in session for context preservation
+        session.update_task_step(step_index, "completed")
         await session.send_text_message(
             f"[SYSTEM] User completed step {step_index + 1}. "
             "Acknowledge briefly and guide them to the next step."

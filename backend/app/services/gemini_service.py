@@ -8,6 +8,7 @@ Based on official documentation:
 import asyncio
 import base64
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Callable, Awaitable
 
@@ -52,12 +53,16 @@ class GeminiSession:
     from Gemini. Sending methods (text, audio, video) are fire-and-forget.
     """
 
+    # Keep last N conversation entries for context handoff
+    MAX_CONTEXT_HISTORY = 30
+
     def __init__(self, session_id: str, mode: str = "voice") -> None:
         self.session_id = session_id
         self.mode = mode  # "voice" or "text"
         self.has_video = False  # Track if video is being used
         self.started_at: datetime | None = None
         self.context_history: list[dict[str, Any]] = []
+        self.active_task: dict[str, Any] | None = None  # {title, steps, current_step}
         self.tool_call_count = 0
         self.running_summary = ""
         self._client: genai.Client | None = None
@@ -65,7 +70,9 @@ class GeminiSession:
         self._context_manager: Any = None  # Store the context manager
         self._is_active = False
         self._receive_task: asyncio.Task | None = None
+        self._reconnect_timer: asyncio.Task | None = None
         self._response_callback: ResponseCallback | None = None
+        self._on_reconnect_needed: Callable[[], Awaitable[None]] | None = None
 
     @property
     def session_timeout(self) -> int:
@@ -118,6 +125,7 @@ When the user asks for step-by-step help (e.g. "how do I...", "walk me through..
 - CRITICAL: You MUST include [TASK_UPDATE] and [TASK_COMPLETE] as TEXT output even when you are speaking audio. The system reads these from your text output, not audio. Always output these tags as text alongside your spoken response.
 - After each step is completed, briefly acknowledge it and guide the user to the next step
 - When ALL steps are completed or the user wants to stop the task, output: [TASK_COMPLETE]
+- If the user's camera is NOT active (no video frames being received), suggest they turn on the camera so you can visually verify their progress. Say something like "You can turn on your camera so I can see your progress."
 - These tags are parsed by the system and NOT shown to the user, so always also speak your guidance naturally"""
 
         return base_prompt + get_safety_prompt_addition()
@@ -234,8 +242,9 @@ When the user asks for step-by-step help (e.g. "how do I...", "walk me through..
                             if hasattr(response.server_content, 'output_transcription') and response.server_content.output_transcription:
                                 transcription = response.server_content.output_transcription
                                 if hasattr(transcription, 'text') and transcription.text:
+                                    logger.info(f"Output transcription: '{transcription.text[:80]}'")
                                     await self._emit({
-                                        "type": "text",
+                                        "type": "output_transcription",
                                         "content": transcription.text,
                                         "complete": response.server_content.turn_complete or False,
                                     })
@@ -325,6 +334,10 @@ When the user asks for step-by-step help (e.g. "how do I...", "walk me through..
         )
 
         self.context_history.append({"role": "user", "content": text})
+        self._trim_context_history()
+        # Keep running summary updated with latest user topic
+        if not text.startswith("[SYSTEM]") and not text.startswith("[Search results]"):
+            self.running_summary = text[:200]
 
     async def send_audio_chunk(self, audio_data: bytes) -> None:
         """Send audio chunk to Gemini (fire-and-forget).
@@ -408,6 +421,76 @@ When the user asks for step-by-step help (e.g. "how do I...", "walk me through..
         """Update running summary for attention recitation."""
         self.running_summary = summary
 
+    def set_active_task(self, title: str, steps: list[dict[str, Any]]) -> None:
+        """Set the active task with title and steps."""
+        self.active_task = {
+            "title": title,
+            "steps": steps,
+            "current_step": 0,
+        }
+        # Override running_summary with task context
+        self.running_summary = f"Guiding: {title} (step 1/{len(steps)}: {steps[0].get('title', 'Step 1')})"
+        logger.info(f"Active task set: {title} with {len(steps)} steps")
+
+    def update_task_step(self, step_index: int, status: str) -> None:
+        """Update a task step's status."""
+        if not self.active_task:
+            return
+        steps = self.active_task["steps"]
+        if 0 <= step_index < len(steps):
+            steps[step_index]["status"] = status
+            if status == "completed":
+                # Find next incomplete step
+                next_step = step_index + 1
+                while next_step < len(steps) and steps[next_step].get("status") == "completed":
+                    next_step += 1
+                self.active_task["current_step"] = next_step
+                # Update running summary with current progress
+                completed = sum(1 for s in steps if s.get("status") == "completed")
+                if next_step < len(steps):
+                    self.running_summary = (
+                        f"Guiding: {self.active_task['title']} "
+                        f"(step {next_step + 1}/{len(steps)}: {steps[next_step].get('title', '')})"
+                    )
+                else:
+                    self.running_summary = f"Guiding: {self.active_task['title']} (all {len(steps)} steps completed)"
+
+    def clear_active_task(self) -> None:
+        """Clear the active task (task completed or dismissed)."""
+        self.active_task = None
+
+    def _trim_context_history(self) -> None:
+        """Keep context_history within limits."""
+        if len(self.context_history) > self.MAX_CONTEXT_HISTORY:
+            self.context_history = self.context_history[-self.MAX_CONTEXT_HISTORY:]
+
+    def start_reconnect_timer(self, callback: Callable[[], Awaitable[None]]) -> None:
+        """Start a proactive timer that triggers reconnect before timeout.
+
+        This ensures reconnect happens even if no user message triggers
+        _get_or_create_session (e.g., user is silent watching video).
+        """
+        self._on_reconnect_needed = callback
+        if self._reconnect_timer and not self._reconnect_timer.done():
+            self._reconnect_timer.cancel()
+
+        delay = max(0, self.session_timeout - RECONNECT_BUFFER_SECONDS)
+        logger.info(f"Reconnect timer set for {delay}s (timeout={self.session_timeout}s)")
+        self._reconnect_timer = asyncio.create_task(
+            self._reconnect_timer_task(delay),
+            name=f"reconnect-timer-{self.session_id}",
+        )
+
+    async def _reconnect_timer_task(self, delay: float) -> None:
+        """Background task that triggers reconnect after delay."""
+        try:
+            await asyncio.sleep(delay)
+            if self._is_active and self._on_reconnect_needed:
+                logger.info(f"Proactive reconnect timer fired for {self.session_id}")
+                await self._on_reconnect_needed()
+        except asyncio.CancelledError:
+            pass
+
     def serialize_context(self) -> dict[str, Any]:
         """Serialize context for session handoff."""
         return {
@@ -415,6 +498,7 @@ When the user asks for step-by-step help (e.g. "how do I...", "walk me through..
             "mode": self.mode,
             "has_video": self.has_video,
             "context_history": self.context_history,
+            "active_task": self.active_task,
             "tool_call_count": self.tool_call_count,
             "running_summary": self.running_summary,
         }
@@ -425,6 +509,7 @@ When the user asks for step-by-step help (e.g. "how do I...", "walk me through..
         session = cls(data["session_id"], data["mode"])
         session.has_video = data.get("has_video", False)
         session.context_history = data.get("context_history", [])
+        session.active_task = data.get("active_task")
         session.tool_call_count = data.get("tool_call_count", 0)
         session.running_summary = data.get("running_summary", "")
         return session
@@ -432,6 +517,14 @@ When the user asks for step-by-step help (e.g. "how do I...", "walk me through..
     async def close(self) -> None:
         """Close the session and cancel background tasks."""
         self._is_active = False
+
+        # Cancel reconnect timer
+        if self._reconnect_timer and not self._reconnect_timer.done():
+            self._reconnect_timer.cancel()
+            try:
+                await self._reconnect_timer
+            except asyncio.CancelledError:
+                pass
 
         # Cancel receive loop
         if self._receive_task and not self._receive_task.done():
@@ -472,7 +565,12 @@ class GeminiService:
         return self.sessions.get(session_id)
 
     async def reconnect_session(self, session_id: str) -> GeminiSession | None:
-        """Reconnect a session approaching timeout."""
+        """Reconnect a session approaching timeout.
+
+        Builds a rich context handoff from the conversation history so the
+        new Gemini session knows what was being discussed and can continue
+        seamlessly.
+        """
         old_session = self.sessions.get(session_id)
         if not old_session:
             return None
@@ -487,20 +585,98 @@ class GeminiService:
         new_session = GeminiSession.restore_context(context_data)
         await new_session.start()
 
-        # Restore context by sending history summary
+        # Build rich context handoff from actual conversation history
         if new_session.context_history:
-            summary = f"Previous conversation summary: {len(new_session.context_history)} exchanges"
-            if new_session.running_summary:
-                summary += f". Current objective: {new_session.running_summary}"
-            # Don't await - just prime the context
+            context_msg = self._build_context_handoff(new_session)
+            logger.info(f"Sending context handoff ({len(context_msg)} chars) for {session_id}")
             await new_session._session.send_client_content(
-                turns=[types.Content(parts=[types.Part(text=summary)])],
+                turns=[types.Content(parts=[types.Part(text=context_msg)])],
                 turn_complete=False,
             )
 
         self.sessions[session_id] = new_session
         logger.info(f"Session reconnected: {session_id}")
         return new_session
+
+    def _build_context_handoff(self, session: GeminiSession) -> str:
+        """Build a rich context message from conversation history.
+
+        Includes active task state (if any) prominently at the top,
+        followed by recent conversation exchanges. Truncates to stay
+        within reasonable limits.
+        """
+        MAX_CONTEXT_CHARS = 4000  # Keep context under ~1K tokens
+        MAX_ENTRY_CHARS = 500  # Truncate individual messages
+
+        parts: list[str] = []
+
+        parts.append("[CONTEXT HANDOFF] This is a continuation of an ongoing conversation. "
+                     "The previous session timed out.")
+
+        # Active task state — most critical for continuity
+        if session.active_task:
+            task = session.active_task
+            title = task["title"]
+            steps = task["steps"]
+            current = task.get("current_step", 0)
+
+            parts.append(f"\n[ACTIVE TASK] \"{title}\" — IN PROGRESS")
+            for i, step in enumerate(steps):
+                step_title = step.get("title", f"Step {i+1}")
+                status = step.get("status", "upcoming")
+                if status == "completed":
+                    parts.append(f"  {i+1}. {step_title} ✓ DONE")
+                elif i == current:
+                    parts.append(f"  {i+1}. {step_title} ← CURRENT STEP")
+                else:
+                    parts.append(f"  {i+1}. {step_title}")
+
+            parts.append(f"IMPORTANT: Continue guiding from step {current + 1}. "
+                         "Do NOT restart the task or create a new [TASK:] block. "
+                         "The task UI is already showing on the user's screen.")
+
+        # Recent conversation history
+        history = session.context_history
+        if history:
+            lines: list[str] = []
+            total_chars = 0
+
+            for entry in reversed(history):
+                role = entry.get("role", "unknown")
+                content = entry.get("content", "")
+                # Strip control patterns from AI content for cleaner context
+                if role == "ai":
+                    content = re.sub(r'\[TASK:\s*\{.*?\}\]', '', content, flags=re.DOTALL)
+                    content = re.sub(r'\[SEARCH:[^]]*\]', '', content)
+                    content = re.sub(r'\[TASK_UPDATE:[^]]*\]', '', content)
+                    content = re.sub(r'\[TASK_COMPLETE\]', '', content, flags=re.IGNORECASE)
+                    content = content.strip()
+                # Strip system messages from context
+                if role == "user" and content.startswith("[SYSTEM]"):
+                    continue
+                if not content:
+                    continue
+                if len(content) > MAX_ENTRY_CHARS:
+                    content = content[:MAX_ENTRY_CHARS] + "..."
+                label = "User" if role == "user" else "Assistant"
+                line = f"- {label}: {content}"
+                if total_chars + len(line) > MAX_CONTEXT_CHARS:
+                    break
+                lines.append(line)
+                total_chars += len(line)
+
+            lines.reverse()
+            if lines:
+                parts.append("\nRecent conversation:")
+                parts.extend(lines)
+
+        if session.running_summary:
+            parts.append(f"\nCurrent objective: {session.running_summary}")
+
+        parts.append("\nContinue the conversation naturally from where we left off. "
+                     "Do NOT mention the session restart to the user.")
+
+        return "\n".join(parts)
 
     async def close_session(self, session_id: str) -> None:
         """Close and remove a session."""
