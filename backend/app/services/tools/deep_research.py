@@ -1,14 +1,14 @@
 """Deep research tool implementation.
 
 Tool: deep_research
-Prefix: deep_ (following Manus naming convention)
+Uses multiple Google Search grounded queries for comprehensive research.
 """
 
 import logging
 from typing import Any
 
 from app.services.tools.registry import ToolResult, tool_registry
-from app.services.tools.web_search import _perform_search
+from app.services.tools.web_search import web_search_handler
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +28,6 @@ DEEP_RESEARCH_TOOL = {
                 "items": {"type": "string"},
                 "description": "Specific aspects to research (optional)",
             },
-            "depth": {
-                "type": "string",
-                "enum": ["quick", "standard", "thorough"],
-                "description": "Research depth level (default: standard)",
-            },
         },
         "required": ["topic"],
     },
@@ -40,13 +35,9 @@ DEEP_RESEARCH_TOOL = {
 
 
 async def deep_research_handler(args: dict[str, Any]) -> ToolResult:
-    """Execute deep research with multi-source synthesis.
-
-    Performs multiple searches and combines results.
-    """
+    """Execute deep research with multi-query Google Search."""
     topic = args.get("topic", "")
     aspects = args.get("aspects", [])
-    depth = args.get("depth", "standard")
 
     if not topic:
         return ToolResult(
@@ -57,40 +48,32 @@ async def deep_research_handler(args: dict[str, Any]) -> ToolResult:
         )
 
     try:
-        # Determine number of queries based on depth
-        num_queries = {"quick": 2, "standard": 4, "thorough": 6}.get(depth, 4)
-
-        # Build search queries
+        # Build search queries from topic + aspects
         queries = [topic]
-        for aspect in aspects[:num_queries - 1]:
+        for aspect in aspects[:3]:
             queries.append(f"{topic} {aspect}")
 
-        # Perform multiple searches
-        all_results = []
-        sources = []
+        # Run searches and collect results
+        answers = []
+        all_sources = []
 
-        for query in queries[:num_queries]:
-            results = await _perform_search(query, num_results=3)
-            for r in results:
-                if r.get("url") not in sources:
-                    sources.append(r.get("url"))
-                    all_results.append({
-                        "title": r.get("title", ""),
-                        "snippet": r.get("snippet", "")[:150],
-                        "url": r.get("url", ""),
-                        "query": query,
-                    })
+        for query in queries:
+            result = await web_search_handler({"query": query})
+            if result.success:
+                answers.append(result.result.get("answer", ""))
+                for s in result.result.get("sources", []):
+                    if s.get("url") and s["url"] not in [x.get("url") for x in all_sources]:
+                        all_sources.append(s)
 
-        # Return synthesized results
+        combined = "\n\n".join(f"[{q}]: {a}" for q, a in zip(queries, answers) if a)
+
         return ToolResult(
             tool_name="deep_research",
             success=True,
             result={
                 "topic": topic,
-                "depth": depth,
-                "sources_count": len(sources),
-                "findings": all_results[:10],  # Limit for context efficiency
-                "sources": sources[:10],
+                "synthesis": combined,
+                "sources": all_sources[:8],
             },
         )
     except Exception as e:
