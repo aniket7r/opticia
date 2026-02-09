@@ -53,8 +53,11 @@ async def _handle_search_in_text(session: Any, state: ConnectionState, text: str
     else:
         result_text = f"Search failed: {tool_result.error}"
 
-    # Send results back to Gemini as context
-    await session.send_text_message(f"[Search results]: {result_text}")
+    # Send results back to Gemini with explicit instruction to relay the answer
+    await session.send_text_message(
+        f"[SYSTEM] The search is complete. Here are the results:\n\n{result_text}\n\n"
+        "Now tell the user the answer based on these search results. Be concise and conversational."
+    )
 
 
 def _sanitize_json(raw: str) -> str:
