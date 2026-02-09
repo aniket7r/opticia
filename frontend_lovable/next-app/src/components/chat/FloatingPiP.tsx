@@ -87,7 +87,7 @@ export function FloatingPiP({ children, onTap, isTaskMode = false, isCameraActiv
     <div
       ref={pipRef}
       className={cn(
-        "z-40 cursor-grab select-none overflow-hidden shadow-xl shadow-black/20",
+        "z-40 cursor-grab select-none touch-none overflow-hidden shadow-xl shadow-black/20",
         minimized
           ? `w-[52px] h-[52px] rounded-full ring-2 ring-violet-400/30 shadow-lg shadow-violet-500/25 ${isCameraActive ? "animate-pulse" : ""}`
           : "w-[22vw] max-w-[200px] min-w-[100px] aspect-[3/4] rounded-2xl ring-1 ring-black/10",
