@@ -38,18 +38,20 @@ jobs:
             --format 'value(status.url)' 2>/dev/null || echo "")
           echo "url=$URL" >> $GITHUB_OUTPUT
 
-      - name: Deploy to Cloud Run
+      - name: Write .env.production
         run: |
           BACKEND_URL="${{ steps.backend.outputs.url }}"
           WS_URL=$(echo "$BACKEND_URL" | sed 's|https://|wss://|')
+          printf 'NEXT_PUBLIC_WS_URL=%s/ws/session\nNEXT_PUBLIC_API_URL=%s/api/v1\n' "$WS_URL" "$BACKEND_URL" > frontend_lovable/next-app/.env.production
 
+      - name: Deploy to Cloud Run
+        run: |
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --source frontend_lovable/next-app/ \
             --project ${{ secrets.GCP_PROJECT_ID }} \
             --region ${{ env.REGION }} \
             --platform managed \
-            --allow-unauthenticated \
-            --set-build-env-vars "NEXT_PUBLIC_WS_URL=${WS_URL}/ws/session,NEXT_PUBLIC_API_URL=${BACKEND_URL}/api/v1"
+            --allow-unauthenticated
 
       - name: Show Service URL
         run: |

@@ -13,12 +13,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Build-time env vars (NEXT_PUBLIC_* are baked into the bundle)
-ARG NEXT_PUBLIC_WS_URL
-ARG NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-
+# NEXT_PUBLIC_* vars come from .env.production (written by CI before deploy)
 RUN npm run build
 
 # ---- Production ----
