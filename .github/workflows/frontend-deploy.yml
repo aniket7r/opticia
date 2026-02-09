@@ -49,7 +49,7 @@ jobs:
             --region ${{ env.REGION }} \
             --platform managed \
             --allow-unauthenticated \
-            --build-env-vars "NEXT_PUBLIC_WS_URL=${WS_URL}/ws/session,NEXT_PUBLIC_API_URL=${BACKEND_URL}/api/v1"
+            --set-build-env-vars "NEXT_PUBLIC_WS_URL=${WS_URL}/ws/session,NEXT_PUBLIC_API_URL=${BACKEND_URL}/api/v1"
 
       - name: Show Service URL
         run: |
