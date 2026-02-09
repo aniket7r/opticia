@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Download, FileText, File } from "lucide-react";
+import { FileText } from "lucide-react";
 
 interface ReportDownloadProps {
   markdownContent: string;
@@ -10,9 +10,9 @@ interface ReportDownloadProps {
 }
 
 export function ReportDownload({ markdownContent, topic, apiBaseUrl }: ReportDownloadProps) {
-  const [downloading, setDownloading] = useState<"docx" | "pdf" | null>(null);
+  const [downloading, setDownloading] = useState<"docx" | null>(null);
 
-  const handleDownload = async (format: "docx" | "pdf") => {
+  const handleDownload = async (format: "docx") => {
     setDownloading(format);
 
     try {
@@ -65,19 +65,6 @@ export function ReportDownload({ markdownContent, topic, apiBaseUrl }: ReportDow
         DOCX
       </button>
 
-      <button
-        onClick={() => handleDownload("pdf")}
-        disabled={downloading !== null}
-        className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
-        title="Download as PDF"
-      >
-        {downloading === "pdf" ? (
-          <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
-        ) : (
-          <File className="h-3.5 w-3.5" />
-        )}
-        PDF
-      </button>
     </div>
   );
 }
