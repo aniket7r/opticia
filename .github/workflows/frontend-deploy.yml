@@ -1,0 +1,61 @@
+name: Opticia Frontend - Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend_lovable/next-app/**'
+      - '.github/workflows/frontend-deploy.yml'
+  workflow_dispatch:
+
+env:
+  REGION: us-central1
+  SERVICE_NAME: opticia-frontend
+
+jobs:
+  deploy:
+    name: Deploy Frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Google Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get Backend URL
+        id: backend
+        run: |
+          URL=$(gcloud run services describe opticia-backend \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --region ${{ env.REGION }} \
+            --format 'value(status.url)' 2>/dev/null || echo "")
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Cloud Run
+        run: |
+          BACKEND_URL="${{ steps.backend.outputs.url }}"
+          WS_URL=$(echo "$BACKEND_URL" | sed 's|https://|wss://|')
+
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --source frontend_lovable/next-app/ \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --build-env-vars "NEXT_PUBLIC_WS_URL=${WS_URL}/ws/session,NEXT_PUBLIC_API_URL=${BACKEND_URL}/api/v1"
+
+      - name: Show Service URL
+        run: |
+          URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --region ${{ env.REGION }} \
+            --format 'value(status.url)')
+          echo "## Frontend Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "URL: $URL" >> $GITHUB_STEP_SUMMARY
