@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Mic, Camera as CameraIcon, Video, ArrowRight, Sparkles } from "lucide-react";
+import Image from "next/image";
+import { Mic, Camera as CameraIcon, Video, ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type OnboardingStep = "welcome" | "mic" | "camera" | "ready";
@@ -44,8 +45,8 @@ export function OnboardingOverlay({ onComplete, onRequestMic, onRequestCamera }:
       <div className="mx-auto flex max-w-md flex-col items-center px-6 text-center animate-fade-in">
         {step === "welcome" && (
           <>
-            <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-primary/10">
-              <Sparkles className="h-10 w-10 text-primary" />
+            <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-full overflow-hidden">
+              <Image src="/logo.svg" alt="Opticia" width={80} height={80} />
             </div>
             <h1 className="mb-3 text-2xl font-bold text-foreground">
               Hi, I'm Opticia
@@ -140,8 +141,8 @@ export function OnboardingOverlay({ onComplete, onRequestMic, onRequestCamera }:
 
         {step === "ready" && (
           <>
-            <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-success/10">
-              <Sparkles className="h-10 w-10 text-success" />
+            <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-full overflow-hidden">
+              <Image src="/logo.svg" alt="Opticia" width={80} height={80} />
             </div>
             <h2 className="mb-3 text-xl font-bold text-foreground">
               You're all set!

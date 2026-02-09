@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { PanelLeftClose, SquarePen, Search, Settings, Puzzle, Smartphone, FileText, ListTodo, PanelLeft, Filter, Star, Circle, CheckCircle2, PauseCircle } from "lucide-react";
+import Image from "next/image";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { ChatCard } from "./ChatCard";
@@ -82,9 +83,7 @@ export function ChatSidebar({
         {/* Logo row */}
         <div className="flex items-center h-8 mb-3">
           <div className="w-14 flex items-center justify-center shrink-0">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-background text-xs font-bold tracking-tight">
-              Op
-            </div>
+            <Image src="/logo.svg" alt="Opticia" width={32} height={32} className="rounded-lg" />
           </div>
           <div className="flex-1 flex items-center justify-between pr-3">
             <span className="font-semibold text-foreground text-[15px] tracking-tight">Opticia</span>
@@ -220,10 +219,10 @@ export function ChatSidebar({
           {/* Logo */}
           <button
             onClick={onOpen}
-            className="group flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-background text-xs font-bold tracking-tight transition-colors hover:bg-foreground/80 mb-3"
+            className="group flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:opacity-80 mb-3"
             aria-label="Open sidebar"
           >
-            <span className="group-hover:hidden">Op</span>
+            <Image src="/logo.svg" alt="Opticia" width={32} height={32} className="rounded-lg group-hover:hidden" />
             <PanelLeft className="h-4 w-4 hidden group-hover:block" />
           </button>
 
@@ -299,17 +298,17 @@ export function ChatSidebar({
     );
   }
 
-  // Mobile: G3 logo button when closed, overlay sidebar when open
+  // Mobile: logo button when closed, overlay sidebar when open
   return (
     <>
-      {/* Floating G3 logo to reopen sidebar */}
+      {/* Floating logo to reopen sidebar */}
       {!isOpen && (
         <button
           onClick={onOpen}
-          className="fixed top-4 left-4 z-40 flex h-9 w-9 items-center justify-center rounded-lg bg-foreground text-background text-xs font-bold tracking-tight shadow-lg active:scale-95 transition-transform"
+          className="fixed top-4 left-4 z-40 flex h-9 w-9 items-center justify-center rounded-lg shadow-lg active:scale-95 transition-transform"
           aria-label="Open sidebar"
         >
-          Op
+          <Image src="/logo.svg" alt="Opticia" width={36} height={36} className="rounded-lg" />
         </button>
       )}
 

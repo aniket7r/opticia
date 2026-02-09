@@ -1,7 +1,8 @@
 "use client";
 
 import { useRef, useEffect, useMemo, useState, useCallback } from "react";
-import { Bot, ArrowDown, Check } from "lucide-react";
+import Image from "next/image";
+import { ArrowDown, Check } from "lucide-react";
 import { MessageBubble, type Message, MarkdownContent } from "./MessageBubble";
 import { MessageActions } from "./MessageActions";
 import { ThinkingDisplay } from "./ThinkingDisplay";
@@ -15,9 +16,7 @@ type ChatItem =
 function AiHeader({ timestamp }: { timestamp?: Date }) {
   return (
     <div className="flex items-center gap-2 mb-2">
-      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-foreground/10">
-        <Bot className="h-3.5 w-3.5 text-foreground/70" />
-      </div>
+      <Image src="/logo.svg" alt="Opticia" width={24} height={24} className="rounded-full" />
       <span className="text-[13px] font-semibold tracking-tight text-foreground">
         Opticia
       </span>
@@ -41,9 +40,7 @@ function EmptyState() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center py-16">
       <div className="flex items-center gap-2.5 mb-3">
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-foreground/10">
-          <Bot className="h-4.5 w-4.5 text-foreground/70" />
-        </div>
+        <Image src="/logo.svg" alt="Opticia" width={32} height={32} className="rounded-full" />
       </div>
       <h2 className="text-xl font-semibold tracking-tight text-foreground">
         {getGreeting()}

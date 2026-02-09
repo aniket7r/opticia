@@ -1,7 +1,8 @@
 "use client";
 
+import Image from "next/image";
 import { cn } from "@/lib/utils";
-import { Bot, Check } from "lucide-react";
+import { Check } from "lucide-react";
 import { Marked } from "marked";
 import { useMemo } from "react";
 import { MessageActions } from "./MessageActions";
@@ -51,9 +52,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       <div className="group/ai flex py-3 animate-fade-in">
         <div className="max-w-[85%]">
           <div className="flex items-center gap-2 mb-2">
-            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-foreground/10">
-              <Bot className="h-3.5 w-3.5 text-foreground/70" />
-            </div>
+            <Image src="/logo.svg" alt="Opticia" width={24} height={24} className="rounded-full" />
             <span className="text-[13px] font-semibold tracking-tight text-foreground">
               Opticia
             </span>
