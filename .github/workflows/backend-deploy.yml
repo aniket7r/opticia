@@ -42,9 +42,7 @@ jobs:
             --set-env-vars "SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" \
             --set-env-vars "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             --set-env-vars "^@^CORS_ORIGINS=[\"*\"]" \
-            --timeout 900 \
-            --concurrency 80 \
-            --session-affinity
+            --timeout 900
 
       - name: Show Service URL
         run: |
