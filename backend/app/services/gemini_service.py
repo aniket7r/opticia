@@ -289,10 +289,15 @@ When the user asks for step-by-step help (e.g. "how do I...", "walk me through..
                 except Exception as e:
                     if not self._is_active:
                         break
-                    logger.error(f"Receive iteration error for {self.session_id}: {e}", exc_info=True)
-                    await self._emit({"type": "error", "message": str(e)})
+                    error_msg = str(e)
+                    logger.error(f"Receive iteration error for {self.session_id}: {error_msg}", exc_info=True)
+                    # Suppress transient SDK errors (e.g. "await wasn't used with future")
+                    # These resolve on retry and confuse users if surfaced
+                    is_transient = "await" in error_msg.lower() and "future" in error_msg.lower()
+                    if not is_transient:
+                        await self._emit({"type": "error", "message": error_msg})
                     # Brief pause before retrying receive
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.5)
 
         except asyncio.CancelledError:
             logger.info(f"Receive loop cancelled for session {self.session_id}")
