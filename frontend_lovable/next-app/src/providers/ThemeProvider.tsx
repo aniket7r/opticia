@@ -15,7 +15,7 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
     if (typeof window !== "undefined") {
-      return (localStorage.getItem("gemini3-theme") as Theme) || "light";
+      return (localStorage.getItem("opticia-theme") as Theme) || "light";
     }
     return "light";
   });
@@ -26,7 +26,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     if (theme === "light") {
       root.classList.add("light");
     }
-    localStorage.setItem("gemini3-theme", theme);
+    localStorage.setItem("opticia-theme", theme);
   }, [theme]);
 
   const toggleTheme = () => setThemeState((t) => (t === "dark" ? "light" : "dark"));

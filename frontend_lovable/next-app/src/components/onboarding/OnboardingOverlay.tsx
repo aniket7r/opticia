@@ -48,7 +48,7 @@ export function OnboardingOverlay({ onComplete, onRequestMic, onRequestCamera }:
               <Sparkles className="h-10 w-10 text-primary" />
             </div>
             <h1 className="mb-3 text-2xl font-bold text-foreground">
-              Hi, I'm gemini3
+              Hi, I'm Opticia
             </h1>
             <p className="mb-2 text-base text-muted-foreground leading-relaxed">
               I can <strong>see</strong> what you're looking at and guide you through anything — hands-free.

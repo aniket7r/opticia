@@ -83,11 +83,11 @@ export function ChatSidebar({
         <div className="flex items-center h-8 mb-3">
           <div className="w-14 flex items-center justify-center shrink-0">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-background text-xs font-bold tracking-tight">
-              G3
+              Op
             </div>
           </div>
           <div className="flex-1 flex items-center justify-between pr-3">
-            <span className="font-semibold text-foreground text-[15px] tracking-tight">gemini3</span>
+            <span className="font-semibold text-foreground text-[15px] tracking-tight">Opticia</span>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -216,14 +216,14 @@ export function ChatSidebar({
     if (!isOpen) {
       // Collapsed icon rail
       return (
-        <aside className="w-14 shrink-0 border-r border-border bg-sidebar-background h-full flex flex-col items-center pt-4">
+        <aside className="w-14 shrink-0 border-r border-border bg-sidebar h-full flex flex-col items-center pt-4">
           {/* Logo */}
           <button
             onClick={onOpen}
             className="group flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-background text-xs font-bold tracking-tight transition-colors hover:bg-foreground/80 mb-3"
             aria-label="Open sidebar"
           >
-            <span className="group-hover:hidden">G3</span>
+            <span className="group-hover:hidden">Op</span>
             <PanelLeft className="h-4 w-4 hidden group-hover:block" />
           </button>
 
@@ -293,15 +293,27 @@ export function ChatSidebar({
       );
     }
     return (
-      <aside className="w-[280px] shrink-0 border-r border-border bg-sidebar-background h-full">
+      <aside className="w-[280px] shrink-0 border-r border-border bg-sidebar h-full">
         {sidebarContent}
       </aside>
     );
   }
 
-  // Mobile: overlay sidebar
+  // Mobile: G3 logo button when closed, overlay sidebar when open
   return (
     <>
+      {/* Floating G3 logo to reopen sidebar */}
+      {!isOpen && (
+        <button
+          onClick={onOpen}
+          className="fixed top-4 left-4 z-40 flex h-9 w-9 items-center justify-center rounded-lg bg-foreground text-background text-xs font-bold tracking-tight shadow-lg active:scale-95 transition-transform"
+          aria-label="Open sidebar"
+        >
+          Op
+        </button>
+      )}
+
+      {/* Backdrop */}
       <div
         className={cn(
           "fixed inset-0 bg-black/40 z-40 transition-opacity duration-300",
@@ -310,9 +322,11 @@ export function ChatSidebar({
         onClick={onClose}
         aria-hidden="true"
       />
+
+      {/* Sidebar panel — same styling as desktop */}
       <div
         className={cn(
-          "fixed inset-y-0 left-0 w-[280px] bg-sidebar-background z-50 flex flex-col",
+          "fixed inset-y-0 left-0 w-[280px] border-r border-border bg-sidebar z-50 flex flex-col shadow-xl",
           "transform transition-transform duration-300 ease-out",
           isOpen ? "translate-x-0" : "-translate-x-full"
         )}

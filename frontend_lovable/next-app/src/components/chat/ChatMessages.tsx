@@ -19,7 +19,7 @@ function AiHeader({ timestamp }: { timestamp?: Date }) {
         <Bot className="h-3.5 w-3.5 text-foreground/70" />
       </div>
       <span className="text-[13px] font-semibold tracking-tight text-foreground">
-        gemini3
+        Opticia
       </span>
       {timestamp && (
         <span className="text-[11px] font-normal tracking-wide text-muted-foreground/60 opacity-0 group-hover/ai:opacity-100 transition-opacity duration-200">

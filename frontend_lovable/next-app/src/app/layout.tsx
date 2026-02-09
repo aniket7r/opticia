@@ -9,7 +9,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Gemini Assistant",
+  title: "Opticia",
   description: "AI-powered assistant that can see and guide you through tasks",
 };
 

@@ -1,6 +1,6 @@
 {
-  "name": "gemini3",
-  "short_name": "gemini3",
+  "name": "Opticia",
+  "short_name": "Opticia",
   "description": "AI that sees and guides",
   "start_url": "/app",
   "display": "standalone",
