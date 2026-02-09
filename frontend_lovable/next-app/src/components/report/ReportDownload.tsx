@@ -16,8 +16,8 @@ export function ReportDownload({ markdownContent, topic, apiBaseUrl }: ReportDow
     setDownloading(format);
 
     try {
-      const baseUrl = apiBaseUrl || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      const response = await fetch(`${baseUrl}/api/v1/reports/export`, {
+      const baseUrl = apiBaseUrl || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+      const response = await fetch(`${baseUrl}/reports/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
