@@ -127,7 +127,18 @@ When the user asks for step-by-step help (e.g. "how do I...", "walk me through..
 - After each step is completed, briefly acknowledge it and guide the user to the next step
 - When ALL steps are completed or the user wants to stop the task, output: [TASK_COMPLETE]
 - If the user's camera is NOT active (no video frames being received), suggest they turn on the camera so you can visually verify their progress. Say something like "You can turn on your camera so I can see your progress."
-- These tags are parsed by the system and NOT shown to the user, so always also speak your guidance naturally"""
+- These tags are parsed by the system and NOT shown to the user, so always also speak your guidance naturally
+
+## Report Generation
+When the conversation goes deep on a topic (3+ exchanges about the same subject), or the user explicitly asks for a report, summary, comparison, or document, output this tag in your text:
+[REPORT: descriptive topic title]
+- Only suggest a report when there's enough substance to write about
+- If the user declines or ignores your suggestion, do NOT suggest it again for the same topic
+- The system will generate a detailed document combining your conversation context, web research, and AI analysis
+- The report appears in a side panel — the user can keep talking to you while it generates
+- You can suggest reports for: research summaries, comparison guides, how-to documents, checklists, analysis reports
+- CRITICAL: Output [REPORT:] as TEXT even when speaking audio. The system reads it from text output, not audio.
+- This tag is parsed by the system and NOT shown to the user, so also speak naturally about what you're generating (e.g. "Let me put together a report on that for you")"""
 
         return base_prompt + get_safety_prompt_addition()
 
