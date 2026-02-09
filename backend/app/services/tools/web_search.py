@@ -1,14 +1,17 @@
-"""Web search tool implementation.
+"""Web search tool implementation using Gemini API with Google Search grounding.
 
-Tool: web_search
-Prefix: web_ (following Manus naming convention)
+Uses a side-channel Gemini API call (not the Live session) to perform
+Google Search and return grounded results. This avoids the tool+video
+incompatibility in the native audio model.
 """
 
 import logging
 from typing import Any
 
-import httpx
+from google import genai
+from google.genai import types
 
+from app.core.config import settings
 from app.services.tools.registry import ToolResult, tool_registry
 
 logger = logging.getLogger(__name__)
@@ -16,17 +19,13 @@ logger = logging.getLogger(__name__)
 # Tool definition
 WEB_SEARCH_TOOL = {
     "name": "web_search",
-    "description": "Search the web for current information. Use for questions about recent events, facts, or when you need up-to-date information.",
+    "description": "Search the web for current information using Google Search.",
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
                 "description": "The search query",
-            },
-            "num_results": {
-                "type": "integer",
-                "description": "Number of results to return (default 5, max 10)",
             },
         },
         "required": ["query"],
@@ -35,13 +34,8 @@ WEB_SEARCH_TOOL = {
 
 
 async def web_search_handler(args: dict[str, Any]) -> ToolResult:
-    """Execute web search and return results.
-
-    Note: In production, integrate with a real search API
-    (Google Custom Search, Bing, SerpAPI, etc.)
-    """
+    """Execute web search via Gemini API with Google Search grounding."""
     query = args.get("query", "")
-    num_results = min(args.get("num_results", 5), 10)
 
     if not query:
         return ToolResult(
@@ -52,62 +46,47 @@ async def web_search_handler(args: dict[str, Any]) -> ToolResult:
         )
 
     try:
-        # TODO: Replace with actual search API
-        # For hackathon MVP, use a placeholder or free search API
-        results = await _perform_search(query, num_results)
+        client = genai.Client(api_key=settings.gemini_api_key)
 
-        # Format results concisely (restoration strategy - keep URLs, drop full content)
-        formatted = []
-        for r in results:
-            formatted.append({
-                "title": r.get("title", ""),
-                "snippet": r.get("snippet", "")[:200],  # Truncate for context efficiency
-                "url": r.get("url", ""),
-            })
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=f"Search and provide a concise, factual answer: {query}",
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())]
+            ),
+        )
+
+        answer = response.text or "No results found."
+
+        # Extract grounding sources from metadata
+        sources = []
+        if (response.candidates
+                and response.candidates[0].grounding_metadata
+                and response.candidates[0].grounding_metadata.grounding_chunks):
+            for chunk in response.candidates[0].grounding_metadata.grounding_chunks:
+                if hasattr(chunk, 'web') and chunk.web:
+                    sources.append({
+                        "title": chunk.web.title or "",
+                        "url": chunk.web.uri or "",
+                    })
 
         return ToolResult(
             tool_name="web_search",
             success=True,
             result={
                 "query": query,
-                "results": formatted,
-                "count": len(formatted),
+                "answer": answer,
+                "sources": sources[:5],
             },
         )
     except Exception as e:
-        logger.error(f"Web search error: {e}")
+        logger.error(f"Google Search error: {e}", exc_info=True)
         return ToolResult(
             tool_name="web_search",
             success=False,
             result=None,
-            error=str(e),
+            error=str(e)[:200],
         )
-
-
-async def _perform_search(query: str, num_results: int) -> list[dict[str, Any]]:
-    """Perform web search using DuckDuckGo (ddgs package)."""
-    from ddgs import DDGS
-
-    try:
-        results = DDGS().text(query, max_results=num_results)
-
-        return [
-            {
-                "title": r.get("title", ""),
-                "snippet": r.get("body", ""),
-                "url": r.get("href", ""),
-            }
-            for r in results
-        ]
-    except Exception as e:
-        logger.error(f"DuckDuckGo search error: {e}")
-        return [
-            {
-                "title": f"Search failed for: {query}",
-                "snippet": f"Search temporarily unavailable: {str(e)[:100]}",
-                "url": "",
-            }
-        ]
 
 
 def register_web_search_tool() -> None:

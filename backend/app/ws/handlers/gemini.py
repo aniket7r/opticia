@@ -43,7 +43,13 @@ async def _handle_search_in_text(session: Any, state: ConnectionState, text: str
 
     tool_result = await tool_registry.execute("web_search", {"query": query})
     if tool_result.success:
-        result_text = f"Search results for '{query}':\n{tool_result.result}"
+        result = tool_result.result
+        answer = result.get("answer", "No results.")
+        sources = result.get("sources", [])
+        source_lines = "\n".join(f"- {s['title']}: {s['url']}" for s in sources if s.get("url"))
+        result_text = f"Search results for '{query}':\n{answer}"
+        if source_lines:
+            result_text += f"\n\nSources:\n{source_lines}"
     else:
         result_text = f"Search failed: {tool_result.error}"
 
