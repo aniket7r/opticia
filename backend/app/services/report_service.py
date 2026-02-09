@@ -5,13 +5,11 @@ using a separate Gemini text API call (non-live), enriched with
 web search results and conversation context.
 """
 
-import asyncio
 import io
 import logging
 import uuid
 from typing import Any
 
-from ddgs import DDGS
 from google import genai
 from google.genai import types
 
@@ -20,50 +18,47 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # Gemini text model for report generation (non-live, non-audio)
-REPORT_MODEL = "gemini-2.5-flash-preview-05-20"
+REPORT_MODEL = "gemini-2.5-flash"
 
 
 async def _search_topic(topic: str, num_queries: int = 3) -> str:
-    """Run web searches on the topic and return formatted results."""
-    # Generate search variations
+    """Run web searches using Google Search grounding and return formatted results."""
+    from app.services.tools.web_search import web_search_handler
+
     queries = [topic]
     if num_queries >= 2:
         queries.append(f"{topic} detailed information")
     if num_queries >= 3:
         queries.append(f"{topic} comparison guide")
 
-    all_results: list[dict[str, Any]] = []
+    all_answers: list[str] = []
+    all_sources: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
 
     for query in queries:
         try:
-            results = await asyncio.to_thread(
-                lambda q=query: DDGS().text(q, max_results=3)
-            )
-            for r in results:
-                all_results.append({
-                    "title": r.get("title", ""),
-                    "snippet": r.get("body", ""),
-                    "url": r.get("href", ""),
-                })
+            result = await web_search_handler({"query": query})
+            if result.success and result.result:
+                answer = result.result.get("answer", "")
+                if answer:
+                    all_answers.append(f"[{query}]: {answer}")
+                for s in result.result.get("sources", []):
+                    url = s.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_sources.append(s)
         except Exception as e:
             logger.warning(f"Search failed for '{query}': {e}")
 
-    if not all_results:
+    if not all_answers:
         return "(No web search results available)"
 
-    # Format results concisely
-    formatted = []
-    seen_urls: set[str] = set()
-    for r in all_results:
-        url = r.get("url", "")
-        if url in seen_urls:
-            continue
-        seen_urls.add(url)
-        formatted.append(f"- {r['title']}: {r['snippet'][:200]}")
-        if len(formatted) >= 8:
-            break
+    formatted = "\n\n".join(all_answers)
+    if all_sources:
+        source_lines = "\n".join(f"- {s.get('title', '')}: {s.get('url', '')}" for s in all_sources[:8])
+        formatted += f"\n\nSources:\n{source_lines}"
 
-    return "\n".join(formatted)
+    return formatted
 
 
 def _build_generation_prompt(
@@ -133,17 +128,15 @@ async def generate_report(
         # Step 2: Build prompt
         prompt = _build_generation_prompt(topic, context_history, search_results)
 
-        # Step 3: Call Gemini text API (non-live)
+        # Step 3: Call Gemini text API (non-live, async)
         client = genai.Client(api_key=settings.gemini_api_key)
-        response = await asyncio.to_thread(
-            lambda: client.models.generate_content(
-                model=REPORT_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.7,
-                    max_output_tokens=4096,
-                ),
-            )
+        response = await client.aio.models.generate_content(
+            model=REPORT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=4096,
+            ),
         )
 
         markdown_content = response.text or ""
