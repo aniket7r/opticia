@@ -18,20 +18,10 @@ import { useScreenShare } from "@/hooks/useScreenShare";
 import { useChat, Message } from "@/hooks/useChat";
 import { useWebSocket } from "@/providers/WebSocketProvider";
 import { toast } from "sonner";
-import type { TaskData } from "@/components/task/types";
 import type { ChatSummary } from "@/components/sidebar/types";
 
 const ONBOARDING_KEY = "opticia-onboarded";
 const CHATS_KEY = "opticia-chats";
-
-// Initial empty task template
-const emptyTask: TaskData = {
-  id: "",
-  title: "",
-  summary: "",
-  currentStep: 0,
-  steps: [],
-};
 
 const AppPageClient = () => {
   const isMobile = useIsMobile();
@@ -65,6 +55,11 @@ const AppPageClient = () => {
     clearChat,
     thinkingSteps,
     isThinking,
+    taskTitle: chatTaskTitle,
+    taskSteps: chatTaskSteps,
+    isTaskActive,
+    handleToggleStep: chatHandleToggleStep,
+    dismissTask,
   } = useChat({
     onToolCall: (name, args) => {
       toast.info(`AI is using ${name}...`);
@@ -88,8 +83,6 @@ const AppPageClient = () => {
     setIsHydrated(true);
   }, []);
 
-  const [taskSteps, setTaskSteps] = useState(emptyTask.steps);
-  const [taskTitle, setTaskTitle] = useState("");
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -217,21 +210,6 @@ const AppPageClient = () => {
     );
   }, [currentChatId]);
 
-  const handleToggleStep = useCallback((stepId: string) => {
-    setTaskSteps((prev) =>
-      prev.map((s) =>
-        s.id === stepId
-          ? {
-              ...s,
-              status:
-                s.status === "completed"
-                  ? ("upcoming" as const)
-                  : ("completed" as const),
-            }
-          : s
-      )
-    );
-  }, []);
 
   const handleSendMessage = useCallback(
     (text: string, attachments?: { id: string; name: string; type: "image" | "file"; preview?: string }[]) => {
@@ -315,8 +293,6 @@ const AppPageClient = () => {
     };
     setChats((prev) => [newChat, ...prev]);
     setCurrentChatId(newId);
-    setTaskSteps([]);
-    setTaskTitle("");
   }, [clearChat]);
 
   const handleSelectChat = useCallback(
@@ -424,12 +400,12 @@ const AppPageClient = () => {
                     />
                   </div>
 
-                  {taskSteps.length > 0 && (
+                  {chatTaskSteps.length > 0 && (
                     <div className="shrink-0">
                       <TaskProgressCard
-                        steps={taskSteps}
-                        title={taskTitle}
-                        onToggleStep={handleToggleStep}
+                        steps={chatTaskSteps}
+                        title={chatTaskTitle}
+                        onToggleStep={chatHandleToggleStep}
                       />
                     </div>
                   )}

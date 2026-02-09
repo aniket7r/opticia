@@ -106,7 +106,16 @@ class GeminiSession:
 - When the user shows you something via camera, describe what you see
 - IMPORTANT: Always describe what is CURRENTLY visible in the most recent frame. The user may change what they are showing between turns. Never assume the scene is the same as before - always look at the latest image.
 - Ask clarifying questions when needed
-- Provide clear, actionable guidance"""
+- Provide clear, actionable guidance
+
+## Task Mode (Step-by-Step Guidance)
+When the user asks for step-by-step help (e.g. "how do I...", "walk me through...", "guide me"), or when you see something through the camera that requires multi-step guidance, output a structured task block in your text using this exact format:
+[TASK: {"title": "Short Task Title", "steps": [{"title": "Step 1 title", "description": "Optional details"}, {"title": "Step 2 title"}, {"title": "Step 3 title"}]}]
+- Only output [TASK:] ONCE at the start of your response, then continue with your normal spoken explanation
+- Keep tasks to 3-8 steps with concise step titles (under 60 chars each)
+- When the user says they completed a step (e.g. "done", "next", "finished that", "I did it"), output: [TASK_UPDATE: {"step": <zero-indexed step number>, "status": "completed"}]
+- When ALL steps are completed or the user wants to stop the task, output: [TASK_COMPLETE]
+- These tags are parsed by the system and NOT shown to the user, so always also speak your guidance naturally"""
 
         return base_prompt + get_safety_prompt_addition()
 

@@ -5,6 +5,7 @@ A single background receive loop per session handles ALL responses.
 """
 
 import base64
+import json
 import logging
 import re
 from typing import Any
@@ -17,6 +18,11 @@ logger = logging.getLogger(__name__)
 
 # Pattern to detect search requests in AI text
 SEARCH_PATTERN = re.compile(r'\[SEARCH:\s*(.+?)\]', re.IGNORECASE)
+
+# Patterns to detect task mode in AI text
+TASK_PATTERN = re.compile(r'\[TASK:\s*(\{.+?\})\]', re.IGNORECASE | re.DOTALL)
+TASK_UPDATE_PATTERN = re.compile(r'\[TASK_UPDATE:\s*(\{.+?\})\]', re.IGNORECASE)
+TASK_COMPLETE_PATTERN = re.compile(r'\[TASK_COMPLETE\]', re.IGNORECASE)
 
 
 async def _handle_search_in_text(session: Any, state: ConnectionState, text: str) -> None:
@@ -39,6 +45,86 @@ async def _handle_search_in_text(session: Any, state: ConnectionState, text: str
 
     # Send results back to Gemini as context
     await session.send_text_message(f"[Search results]: {result_text}")
+
+
+def _extract_json_from_tag(text: str, tag: str) -> str | None:
+    """Extract JSON object from a [TAG: {...}] pattern using bracket counting."""
+    idx = text.upper().find(f"[{tag.upper()}:")
+    if idx == -1:
+        return None
+    # Find the opening brace
+    brace_start = text.find("{", idx)
+    if brace_start == -1:
+        return None
+    # Count braces to find the matching closing brace
+    depth = 0
+    for i in range(brace_start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                raw = text[brace_start:i + 1]
+                # Sanitize LLM-generated JSON
+                raw = re.sub(r',\s*,', ',', raw)
+                raw = re.sub(r',\s*\]', ']', raw)
+                raw = re.sub(r',\s*\}', '}', raw)
+                return raw
+    return None
+
+
+async def _handle_task_in_text(state: ConnectionState, text: str) -> None:
+    """Detect [TASK:], [TASK_UPDATE:], [TASK_COMPLETE] patterns in AI text."""
+
+    # Check for new task creation
+    raw_json = _extract_json_from_tag(text, "TASK")
+    if raw_json:
+        try:
+            task_json = json.loads(raw_json)
+            title = task_json.get("title", "Task")
+            raw_steps = task_json.get("steps", [])
+
+            steps = []
+            for i, s in enumerate(raw_steps):
+                steps.append({
+                    "id": f"step-{i}",
+                    "title": s.get("title", f"Step {i+1}") if isinstance(s, dict) else str(s),
+                    "description": s.get("description") if isinstance(s, dict) else None,
+                    "status": "current" if i == 0 else "upcoming",
+                    "toggleable": True,
+                })
+
+            await state.send("task.start", {
+                "id": f"task-{state.session_id[:8]}",
+                "title": title,
+                "steps": steps,
+                "currentStep": 0,
+            })
+            logger.info(f"Task started: {title} with {len(steps)} steps")
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning(f"Failed to parse task JSON: {e}")
+        return
+
+    # Check for step update
+    update_match = TASK_UPDATE_PATTERN.search(text)
+    if update_match:
+        try:
+            update_json = json.loads(update_match.group(1))
+            step_index = update_json.get("step", 0)
+            status = update_json.get("status", "completed")
+            await state.send("task.step_update", {
+                "stepIndex": step_index,
+                "status": status,
+            })
+            logger.info(f"Task step {step_index} -> {status}")
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning(f"Failed to parse task update JSON: {e}")
+        return
+
+    # Check for task completion
+    if TASK_COMPLETE_PATTERN.search(text):
+        await state.send("task.complete", {})
+        logger.info("Task completed")
 
 
 async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
@@ -65,6 +151,9 @@ async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
             turn_text_buffer.clear()
             if "[SEARCH:" in full_text.upper():
                 await _handle_search_in_text(session, state, full_text)
+            # Check for task mode patterns
+            if "[TASK" in full_text.upper():
+                await _handle_task_in_text(state, full_text)
             # Notify frontend that the AI turn is complete
             await state.send("ai.turn_complete", {})
         elif chunk_type == "audio":

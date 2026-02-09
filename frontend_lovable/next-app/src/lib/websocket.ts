@@ -47,6 +47,10 @@ export type MessageType =
   | "network.pong"
   | "network.degraded"
   | "network.stats"
+  // Task
+  | "task.start"
+  | "task.step_update"
+  | "task.complete"
   // Conversation
   | "conversation.new"
   | "conversation.reset"

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useWebSocket } from "@/providers/WebSocketProvider";
 import { WSMessage } from "@/lib/websocket";
 import { AudioProcessor, AudioPlayer } from "@/lib/audio";
+import type { Step } from "@/components/task/types";
 
 export interface Message {
   id: string;
@@ -45,6 +46,9 @@ export function useChat(options: UseChatOptions = {}) {
   const [isLoading, setIsLoading] = useState(false);
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
   const [isThinking, setIsThinking] = useState(false);
+  const [taskTitle, setTaskTitle] = useState("");
+  const [taskSteps, setTaskSteps] = useState<Step[]>([]);
+  const [isTaskActive, setIsTaskActive] = useState(false);
 
   const audioProcessorRef = useRef<AudioProcessor | null>(null);
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
@@ -63,7 +67,16 @@ export function useChat(options: UseChatOptions = {}) {
   // Subscribe to AI responses
   useEffect(() => {
     const unsubscribeText = subscribe("ai.text", (msg: WSMessage) => {
-      const { content, complete } = msg.payload as { content: string; complete?: boolean };
+      let { content, complete } = msg.payload as { content: string; complete?: boolean };
+
+      // Strip task control patterns from displayed text
+      content = content
+        .replace(/\[TASK:\s*\{.*?\}\]/gis, "")
+        .replace(/\[TASK_UPDATE:\s*\{.*?\}\]/gi, "")
+        .replace(/\[TASK_COMPLETE\]/gi, "");
+
+      // Skip empty content after stripping
+      if (!content && !complete) return;
 
       // Track AI streaming state for thinking steps
       if (!isAiStreamingRef.current) {
@@ -187,13 +200,40 @@ export function useChat(options: UseChatOptions = {}) {
       setThinkingSteps((prev) =>
         prev.map((s) => ({ ...s, status: "complete" as const }))
       );
-      // Finalize any streaming AI message
+      // Finalize any streaming AI message and strip task patterns from accumulated content
       setMessages((prev) =>
-        prev.map((m, i) =>
-          i === prev.length - 1 && m.role === "ai" && m.isStreaming
-            ? { ...m, isStreaming: false }
-            : m
-        )
+        prev.map((m, i) => {
+          if (i === prev.length - 1 && m.role === "ai" && m.isStreaming) {
+            let cleaned = m.content;
+            // Strip [TASK: {...}] using bracket counting (handles nested JSON)
+            const taskIdx = cleaned.toUpperCase().indexOf("[TASK:");
+            if (taskIdx !== -1) {
+              const braceStart = cleaned.indexOf("{", taskIdx);
+              if (braceStart !== -1) {
+                let depth = 0;
+                for (let j = braceStart; j < cleaned.length; j++) {
+                  if (cleaned[j] === "{") depth++;
+                  else if (cleaned[j] === "}") {
+                    depth--;
+                    if (depth === 0) {
+                      const closeBracket = cleaned.indexOf("]", j);
+                      if (closeBracket !== -1) {
+                        cleaned = cleaned.substring(0, taskIdx) + cleaned.substring(closeBracket + 1);
+                      }
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+            cleaned = cleaned
+              .replace(/\[TASK_UPDATE:\s*\{[^}]*\}\]/gi, "")
+              .replace(/\[TASK_COMPLETE\]/gi, "")
+              .trim();
+            return { ...m, content: cleaned, isStreaming: false };
+          }
+          return m;
+        })
       );
     });
 
@@ -203,10 +243,45 @@ export function useChat(options: UseChatOptions = {}) {
       setIsLoading(false);
     });
 
+    const unsubscribeTaskStart = subscribe("task.start", (msg: WSMessage) => {
+      const { title, steps } = msg.payload as { title: string; steps: Step[] };
+      setTaskTitle(title);
+      setTaskSteps(steps);
+      setIsTaskActive(true);
+    });
+
+    const unsubscribeTaskUpdate = subscribe("task.step_update", (msg: WSMessage) => {
+      const { stepIndex, status } = msg.payload as { stepIndex: number; status: string };
+      setTaskSteps((prev) =>
+        prev.map((s, i) => {
+          if (i === stepIndex) {
+            return { ...s, status: status as Step["status"] };
+          }
+          // Advance "current" marker to next incomplete step
+          if (i === stepIndex + 1 && s.status === "upcoming") {
+            return { ...s, status: "current" };
+          }
+          return s;
+        })
+      );
+    });
+
+    const unsubscribeTaskComplete = subscribe("task.complete", () => {
+      setTaskSteps((prev) => prev.map((s) => ({ ...s, status: "completed" as const })));
+      setTimeout(() => {
+        setIsTaskActive(false);
+        setTaskSteps([]);
+        setTaskTitle("");
+      }, 2000);
+    });
+
     const unsubscribeReset = subscribe("conversation.reset", () => {
       setMessages([]);
       setThinkingSteps([]);
       setIsThinking(false);
+      setTaskSteps([]);
+      setTaskTitle("");
+      setIsTaskActive(false);
     });
 
     return () => {
@@ -216,6 +291,9 @@ export function useChat(options: UseChatOptions = {}) {
       unsubscribeToolCall();
       unsubscribeTurnComplete();
       unsubscribeError();
+      unsubscribeTaskStart();
+      unsubscribeTaskUpdate();
+      unsubscribeTaskComplete();
       unsubscribeReset();
     };
   }, [subscribe, options]);
@@ -323,7 +401,28 @@ export function useChat(options: UseChatOptions = {}) {
     startNewConversation();
     setMessages([]);
     setThinkingSteps([]);
+    setTaskSteps([]);
+    setTaskTitle("");
+    setIsTaskActive(false);
   }, [startNewConversation]);
+
+  // Task step toggle (user clicks checkbox)
+  const handleToggleStep = useCallback((stepId: string) => {
+    setTaskSteps((prev) =>
+      prev.map((s) =>
+        s.id === stepId
+          ? { ...s, status: s.status === "completed" ? "upcoming" as const : "completed" as const }
+          : s
+      )
+    );
+  }, []);
+
+  // Dismiss task
+  const dismissTask = useCallback(() => {
+    setIsTaskActive(false);
+    setTaskSteps([]);
+    setTaskTitle("");
+  }, []);
 
   // Stop audio playback
   const stopAudioPlayback = useCallback(() => {
@@ -339,6 +438,9 @@ export function useChat(options: UseChatOptions = {}) {
     sessionId,
     thinkingSteps,
     isThinking,
+    taskTitle,
+    taskSteps,
+    isTaskActive,
 
     // Actions
     sendMessage,
@@ -349,6 +451,8 @@ export function useChat(options: UseChatOptions = {}) {
     capturePhoto,
     clearChat,
     stopAudioPlayback,
+    handleToggleStep,
+    dismissTask,
 
     // Low-level access
     send,
