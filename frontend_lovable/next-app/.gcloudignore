@@ -1,0 +1,5 @@
+# Import .gitignore rules
+#!include:.gitignore
+
+# Override: allow .env.production (Next.js reads it at build time)
+!.env.production
