@@ -49,6 +49,9 @@ export function useChat(options: UseChatOptions = {}) {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskSteps, setTaskSteps] = useState<Step[]>([]);
   const [isTaskActive, setIsTaskActive] = useState(false);
+  const [taskProposal, setTaskProposal] = useState<{
+    id: string; title: string; steps: Step[];
+  } | null>(null);
 
   const audioProcessorRef = useRef<AudioProcessor | null>(null);
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
@@ -71,7 +74,7 @@ export function useChat(options: UseChatOptions = {}) {
 
       // Strip task control patterns from displayed text
       content = content
-        .replace(/\[TASK:\s*\{.*?\}\]/gis, "")
+        .replace(/\[TASK:\s*\{[^}]*\}\]/gi, "")
         .replace(/\[TASK_UPDATE:\s*\{.*?\}\]/gi, "")
         .replace(/\[TASK_COMPLETE\]/gi, "");
 
@@ -243,11 +246,17 @@ export function useChat(options: UseChatOptions = {}) {
       setIsLoading(false);
     });
 
+    const unsubscribeTaskPropose = subscribe("task.propose", (msg: WSMessage) => {
+      const { id, title, steps } = msg.payload as { id: string; title: string; steps: Step[] };
+      setTaskProposal({ id, title, steps });
+    });
+
     const unsubscribeTaskStart = subscribe("task.start", (msg: WSMessage) => {
       const { title, steps } = msg.payload as { title: string; steps: Step[] };
       setTaskTitle(title);
       setTaskSteps(steps);
       setIsTaskActive(true);
+      setTaskProposal(null);
     });
 
     const unsubscribeTaskUpdate = subscribe("task.step_update", (msg: WSMessage) => {
@@ -291,6 +300,7 @@ export function useChat(options: UseChatOptions = {}) {
       unsubscribeToolCall();
       unsubscribeTurnComplete();
       unsubscribeError();
+      unsubscribeTaskPropose();
       unsubscribeTaskStart();
       unsubscribeTaskUpdate();
       unsubscribeTaskComplete();
@@ -404,18 +414,46 @@ export function useChat(options: UseChatOptions = {}) {
     setTaskSteps([]);
     setTaskTitle("");
     setIsTaskActive(false);
+    setTaskProposal(null);
   }, [startNewConversation]);
 
-  // Task step toggle (user clicks checkbox)
+  // Task step toggle (user clicks checkbox) — also notifies AI
   const handleToggleStep = useCallback((stepId: string) => {
-    setTaskSteps((prev) =>
-      prev.map((s) =>
-        s.id === stepId
-          ? { ...s, status: s.status === "completed" ? "upcoming" as const : "completed" as const }
-          : s
-      )
-    );
-  }, []);
+    setTaskSteps((prev) => {
+      const stepIndex = prev.findIndex((s) => s.id === stepId);
+      if (stepIndex === -1) return prev;
+      const step = prev[stepIndex];
+      const newStatus = step.status === "completed" ? "upcoming" : "completed";
+      // Notify backend so AI knows the step was completed
+      if (newStatus === "completed") {
+        send("task.step_done", { stepIndex, stepId });
+      }
+      return prev.map((s, i) => {
+        if (i === stepIndex) return { ...s, status: newStatus as Step["status"] };
+        if (newStatus === "completed" && i === stepIndex + 1 && s.status === "upcoming") {
+          return { ...s, status: "current" as const };
+        }
+        return s;
+      });
+    });
+  }, [send]);
+
+  // Accept proposed task
+  const acceptTask = useCallback(() => {
+    if (!taskProposal) return;
+    send("task.accept", taskProposal);
+    setTaskTitle(taskProposal.title);
+    setTaskSteps(taskProposal.steps);
+    setIsTaskActive(true);
+    setTaskProposal(null);
+  }, [taskProposal, send]);
+
+  // Decline proposed task
+  const declineTask = useCallback(() => {
+    if (!taskProposal) return;
+    send("task.decline", { id: taskProposal.id });
+    setTaskProposal(null);
+  }, [taskProposal, send]);
 
   // Dismiss task
   const dismissTask = useCallback(() => {
@@ -441,6 +479,7 @@ export function useChat(options: UseChatOptions = {}) {
     taskTitle,
     taskSteps,
     isTaskActive,
+    taskProposal,
 
     // Actions
     sendMessage,
@@ -452,6 +491,8 @@ export function useChat(options: UseChatOptions = {}) {
     clearChat,
     stopAudioPlayback,
     handleToggleStep,
+    acceptTask,
+    declineTask,
     dismissTask,
 
     // Low-level access

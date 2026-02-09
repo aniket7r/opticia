@@ -114,6 +114,9 @@ When the user asks for step-by-step help (e.g. "how do I...", "walk me through..
 - Only output [TASK:] ONCE at the start of your response, then continue with your normal spoken explanation
 - Keep tasks to 3-8 steps with concise step titles (under 60 chars each)
 - When the user says they completed a step (e.g. "done", "next", "finished that", "I did it"), output: [TASK_UPDATE: {"step": <zero-indexed step number>, "status": "completed"}]
+- When you SEE through the camera that the user has completed a step (e.g. you can visually confirm they did it), PROACTIVELY output [TASK_UPDATE: {"step": N, "status": "completed"}] without waiting for them to say "done"
+- CRITICAL: You MUST include [TASK_UPDATE] and [TASK_COMPLETE] as TEXT output even when you are speaking audio. The system reads these from your text output, not audio. Always output these tags as text alongside your spoken response.
+- After each step is completed, briefly acknowledge it and guide the user to the next step
 - When ALL steps are completed or the user wants to stop the task, output: [TASK_COMPLETE]
 - These tags are parsed by the system and NOT shown to the user, so always also speak your guidance naturally"""
 

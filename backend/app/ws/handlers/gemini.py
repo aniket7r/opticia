@@ -4,6 +4,7 @@ Architecture: All handlers use fire-and-forget sending.
 A single background receive loop per session handles ALL responses.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -94,13 +95,13 @@ async def _handle_task_in_text(state: ConnectionState, text: str) -> None:
                     "toggleable": True,
                 })
 
-            await state.send("task.start", {
+            await state.send("task.propose", {
                 "id": f"task-{state.session_id[:8]}",
                 "title": title,
                 "steps": steps,
                 "currentStep": 0,
             })
-            logger.info(f"Task started: {title} with {len(steps)} steps")
+            logger.info(f"Task proposed: {title} with {len(steps)} steps")
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning(f"Failed to parse task JSON: {e}")
         return
@@ -132,9 +133,33 @@ async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
 
     The receive loop forwards all Gemini responses (text, audio, tool calls)
     back to the WebSocket client.
+
+    In voice mode, output_transcription may arrive AFTER turn_complete.
+    We use delayed processing: if the buffer has patterns at turn_complete,
+    process immediately. Otherwise, wait up to 2s for late transcription.
     """
-    # Accumulate text across chunks to detect search patterns
     turn_text_buffer: list[str] = []
+    pending_process: list[asyncio.Task | None] = [None]
+
+    async def _process_buffer() -> None:
+        """Process accumulated text buffer for search/task patterns."""
+        full_text = "".join(turn_text_buffer)
+        turn_text_buffer.clear()
+        if "[SEARCH:" in full_text.upper():
+            await _handle_search_in_text(session, state, full_text)
+        has_task = "[TASK" in full_text.upper()
+        logger.info(f"Buffer processed: {len(full_text)} chars, has_task={has_task}")
+        if has_task:
+            await _handle_task_in_text(state, full_text)
+        await state.send("ai.turn_complete", {})
+
+    async def _delayed_process(delay: float = 2.0) -> None:
+        """Wait for late-arriving output_transcription, then process."""
+        try:
+            await asyncio.sleep(delay)
+            await _process_buffer()
+        except asyncio.CancelledError:
+            pass  # Timer was cancelled (more text arrived or new turn)
 
     async def response_callback(chunk: dict[str, Any]) -> None:
         chunk_type = chunk.get("type")
@@ -145,17 +170,23 @@ async def _ensure_receive_loop(state: ConnectionState, session: Any) -> None:
                 "content": content,
                 "complete": chunk.get("complete", False),
             })
+            # If post-turn-complete text arrives, reset the delay timer
+            if pending_process[0] and not pending_process[0].done():
+                pending_process[0].cancel()
+                pending_process[0] = asyncio.create_task(_delayed_process(1.5))
         elif chunk_type == "turn_complete":
-            # Check accumulated text for search requests
             full_text = "".join(turn_text_buffer)
-            turn_text_buffer.clear()
-            if "[SEARCH:" in full_text.upper():
-                await _handle_search_in_text(session, state, full_text)
-            # Check for task mode patterns
-            if "[TASK" in full_text.upper():
-                await _handle_task_in_text(state, full_text)
-            # Notify frontend that the AI turn is complete
-            await state.send("ai.turn_complete", {})
+            has_patterns = "[TASK" in full_text.upper() or "[SEARCH:" in full_text.upper()
+
+            if has_patterns:
+                # Patterns already in buffer from part.text — process now
+                await _process_buffer()
+            else:
+                # No patterns yet — wait for output_transcription
+                logger.info(f"Turn complete: {len(full_text)} chars, delaying for transcription")
+                if pending_process[0] and not pending_process[0].done():
+                    pending_process[0].cancel()
+                pending_process[0] = asyncio.create_task(_delayed_process(2.0))
         elif chunk_type == "audio":
             await state.send("ai.audio", {
                 "data": chunk["data"],
@@ -264,3 +295,39 @@ async def handle_thinking_request(
     # Gemini's thinking is embedded in responses
     # This handler acknowledges the preference
     await state.send("thinking.enabled", {"visible": True})
+
+
+async def handle_task_accept(state: ConnectionState, payload: dict[str, Any]) -> None:
+    """User accepted the proposed task — activate task mode."""
+    await state.send("task.start", payload)
+    logger.info(f"Task accepted: {payload.get('title', 'Unknown')}")
+    session = gemini_service.get_session(state.session_id)
+    if session:
+        await session.send_text_message(
+            "[SYSTEM] User accepted the guided task. Begin guiding them step by step. "
+            "When they complete each step, output [TASK_UPDATE: {\"step\": N, \"status\": \"completed\"}]. "
+            "When all steps are done, output [TASK_COMPLETE]."
+        )
+
+
+async def handle_task_decline(state: ConnectionState, payload: dict[str, Any]) -> None:
+    """User declined the proposed task — explain conversationally instead."""
+    logger.info("Task declined by user")
+    session = gemini_service.get_session(state.session_id)
+    if session:
+        await session.send_text_message(
+            "[SYSTEM] User declined step-by-step guidance. "
+            "Just explain the topic conversationally instead, without task steps."
+        )
+
+
+async def handle_task_step_done(state: ConnectionState, payload: dict[str, Any]) -> None:
+    """User manually marked a step as done via checkbox."""
+    step_index = payload.get("stepIndex", 0)
+    logger.info(f"User marked step {step_index} as done")
+    session = gemini_service.get_session(state.session_id)
+    if session:
+        await session.send_text_message(
+            f"[SYSTEM] User completed step {step_index + 1}. "
+            "Acknowledge briefly and guide them to the next step."
+        )

@@ -48,8 +48,12 @@ export type MessageType =
   | "network.degraded"
   | "network.stats"
   // Task
+  | "task.propose"
+  | "task.accept"
+  | "task.decline"
   | "task.start"
   | "task.step_update"
+  | "task.step_done"
   | "task.complete"
   // Conversation
   | "conversation.new"

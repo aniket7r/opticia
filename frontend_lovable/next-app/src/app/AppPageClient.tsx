@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { MonitorOff, WifiOff, Wifi } from "lucide-react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { MonitorOff, WifiOff } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { FloatingPiP } from "@/components/chat/FloatingPiP";
 import { LargePreview } from "@/components/chat/LargePreview";
 import { TaskProgressCard } from "@/components/task/TaskProgressCard";
+import { TaskConfirmation } from "@/components/task/TaskConfirmation";
 import { CameraPreview } from "@/components/chat/CameraPreview";
 import { ChatMessages } from "@/components/chat/ChatMessages";
 import { ChatHeader } from "@/components/chat/ChatHeader";
@@ -29,12 +31,16 @@ const AppPageClient = () => {
   // WebSocket connection
   const { isConnected, connectionState, sessionId } = useWebSocket();
 
-  // Camera hook (must be before useChat so captureFrame is available)
+  // Camera + screen share hooks (must be before useChat so captureFrame is available)
   const camera = useCamera();
+  const screenShare = useScreenShare();
 
-  // Stable capture function for useChat - captures frame when camera is active
+  // Stable capture function for useChat - captures frame from active video source
   const captureFrameRef = useRef<(() => string | null) | null>(null);
   captureFrameRef.current = () => {
+    if (screenShare.active) {
+      return screenShare.captureFrame();
+    }
     if (camera.active) {
       return camera.capturePhoto();
     }
@@ -58,8 +64,12 @@ const AppPageClient = () => {
     taskTitle: chatTaskTitle,
     taskSteps: chatTaskSteps,
     isTaskActive,
+    taskProposal,
     handleToggleStep: chatHandleToggleStep,
+    acceptTask,
+    declineTask,
     dismissTask,
+    send,
   } = useChat({
     onToolCall: (name, args) => {
       toast.info(`AI is using ${name}...`);
@@ -133,8 +143,18 @@ const AppPageClient = () => {
 
   const currentChat = chats.find((c) => c.id === currentChatId);
 
-  // Screen share hook
-  const screenShare = useScreenShare();
+  // Detect browser-initiated screen share stop (track ended)
+  const prevScreenShareActive = useRef(screenShare.active);
+  useEffect(() => {
+    if (prevScreenShareActive.current && !screenShare.active) {
+      // Screen share just stopped (browser UI or track ended)
+      send("video.modeSwitch", { mode: "camera" });
+      stopVideoStream();
+      toast("Screen sharing stopped");
+    }
+    prevScreenShareActive.current = screenShare.active;
+  }, [screenShare.active, send, stopVideoStream]);
+
   const isRecordingRef = useRef(false);
 
   // Voice streaming state
@@ -172,25 +192,29 @@ const AppPageClient = () => {
     }
   }, [isVoiceStreaming, startVoice, stopVoice]);
 
-  // Auto-start video streaming when camera is active
+  // Auto-start video streaming when camera or screen share is active
+  // Always stop first so the interval gets a fresh captureFrame closure
   useEffect(() => {
-    if (camera.active && isConnected) {
-      startVideoStream(() => camera.capturePhoto());
-    } else {
-      stopVideoStream();
+    stopVideoStream();
+    if (isConnected && (camera.active || screenShare.active)) {
+      startVideoStream(() => {
+        if (screenShare.active) return screenShare.captureFrame();
+        return camera.capturePhoto();
+      });
     }
-  }, [camera.active, isConnected, startVideoStream, stopVideoStream, camera]);
+  }, [camera.active, screenShare.active, isConnected, startVideoStream, stopVideoStream, camera, screenShare]);
 
-  // Auto-start voice streaming when camera becomes active
+  // Auto-start voice streaming when camera or screen share becomes active
   useEffect(() => {
-    if (camera.active && isConnected && !isVoiceStreaming) {
+    const anyVideoActive = camera.active || screenShare.active;
+    if (anyVideoActive && isConnected && !isVoiceStreaming) {
       startVoice();
     }
-    if (!camera.active && isVoiceStreaming) {
+    if (!anyVideoActive && isVoiceStreaming) {
       stopVoice();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [camera.active, isConnected]);
+  }, [camera.active, screenShare.active, isConnected]);
 
   // Handlers
   const handleRenameChat = useCallback(
@@ -247,15 +271,20 @@ const AppPageClient = () => {
 
   const handleScreenShare = useCallback(async () => {
     if (screenShare.active) {
+      // Stop — the useEffect above handles mode switch + toast
       screenShare.stopScreenShare();
-      toast("Screen sharing stopped");
     } else {
-      await screenShare.startScreenShare();
-      if (!screenShare.error) {
+      // Stop camera before screen share — single source at a time
+      if (camera.active) {
+        camera.stopStream();
+      }
+      const started = await screenShare.startScreenShare();
+      if (started) {
+        send("video.modeSwitch", { mode: "screen" });
         toast("Sharing your screen");
       }
     }
-  }, [screenShare]);
+  }, [screenShare, camera, send]);
 
   const handleOnboardingComplete = useCallback(() => {
     localStorage.setItem(ONBOARDING_KEY, "true");
@@ -386,66 +415,98 @@ const AppPageClient = () => {
             />
 
             <LargePreview>
-              {/* Single centered lane — messages, taskbar, textbox */}
-              <div className="flex h-full flex-col overflow-hidden px-5">
-                <div className="max-w-3xl sm:min-w-[400px] mx-auto w-full flex flex-col flex-1 min-h-0">
-                  <div className="flex-1 min-h-0 overflow-hidden">
-                    <ChatMessages
-                      messages={messages.map((m) => ({
-                        ...m,
-                        type: m.type || "text",
-                      }))}
-                      thinkingSteps={thinkingSteps}
-                      isThinking={isThinking}
-                    />
-                  </div>
-
-                  {chatTaskSteps.length > 0 && (
-                    <div className="shrink-0">
-                      <TaskProgressCard
-                        steps={chatTaskSteps}
-                        title={chatTaskTitle}
-                        onToggleStep={chatHandleToggleStep}
+              <div className={cn(
+                "flex h-full",
+                isTaskActive && chatTaskSteps.length > 0
+                  ? "flex-col md:flex-row"
+                  : "flex-col"
+              )}>
+                {/* Main content — 60% when task active */}
+                <div className={cn(
+                  "flex flex-col overflow-hidden px-5",
+                  isTaskActive && chatTaskSteps.length > 0
+                    ? "h-[60%] md:h-full md:w-[60%] md:border-r md:border-border/40"
+                    : "h-full"
+                )}>
+                  <div className="max-w-3xl sm:min-w-[400px] mx-auto w-full flex flex-col flex-1 min-h-0">
+                    <div className="flex-1 min-h-0 overflow-hidden">
+                      <ChatMessages
+                        messages={messages.map((m) => ({
+                          ...m,
+                          type: m.type || "text",
+                        }))}
+                        thinkingSteps={thinkingSteps}
+                        isThinking={isThinking}
                       />
                     </div>
-                  )}
 
-                  <BottomBar
-                    speakerOn={speakerOn}
-                    cameraOn={camera.active}
-                    onToggleSpeaker={handleToggleSpeaker}
-                    onToggleCamera={() => {
-                      if (camera.active) camera.stopStream();
-                      else camera.startCamera();
-                    }}
-                    onSendMessage={handleSendMessage}
-                    onCapturePhoto={handleCapturePhoto}
-                    onScreenShare={handleScreenShare}
-                    isScreenSharing={screenShare.active}
-                    isVoiceStreaming={isVoiceStreaming}
-                    onToggleVoice={handleToggleVoice}
-                  />
+                    <BottomBar
+                      speakerOn={speakerOn}
+                      cameraOn={camera.active}
+                      onToggleSpeaker={handleToggleSpeaker}
+                      onToggleCamera={() => {
+                        if (camera.active) {
+                          camera.stopStream();
+                        } else {
+                          // Stop screen share before starting camera — single source
+                          if (screenShare.active) {
+                            screenShare.stopScreenShare();
+                          }
+                          camera.startCamera();
+                        }
+                      }}
+                      onSendMessage={handleSendMessage}
+                      onCapturePhoto={handleCapturePhoto}
+                      onScreenShare={handleScreenShare}
+                      isScreenSharing={screenShare.active}
+                      isVoiceStreaming={isVoiceStreaming}
+                      onToggleVoice={handleToggleVoice}
+                    />
+                  </div>
                 </div>
+
+                {/* Task panel — 40% when active, slides in */}
+                {isTaskActive && chatTaskSteps.length > 0 && (
+                  <div className="h-[40%] md:h-full md:w-[40%] overflow-y-auto p-4 animate-in slide-in-from-bottom md:slide-in-from-right duration-300">
+                    <TaskProgressCard
+                      steps={chatTaskSteps}
+                      title={chatTaskTitle}
+                      onToggleStep={chatHandleToggleStep}
+                      onDismiss={dismissTask}
+                    />
+                  </div>
+                )}
               </div>
             </LargePreview>
           </div>
         </div>
 
-        {/* Floating PiP - always camera */}
+        {/* Floating PiP - camera or screen share */}
         <FloatingPiP
-          isTaskMode={false}
-          isCameraActive={camera.active}
+          isTaskMode={isTaskActive}
+          isCameraActive={camera.active || screenShare.active}
           sidebarOpen={sidebarOpen && !isMobile}
         >
           <CameraPreview
             compact
             camera={camera}
+            screenShareStream={screenShare.active ? screenShare.stream : undefined}
             onToggle={() => {
+              if (screenShare.active) return; // Don't toggle camera while screen sharing
               if (camera.active) camera.stopStream();
               else camera.startCamera();
             }}
           />
         </FloatingPiP>
+
+        {/* Task confirmation modal */}
+        <TaskConfirmation
+          open={!!taskProposal}
+          title={taskProposal?.title ?? ""}
+          steps={taskProposal?.steps ?? []}
+          onAccept={acceptTask}
+          onDecline={declineTask}
+        />
       </div>
     </div>
   );
